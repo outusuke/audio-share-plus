@@ -44,6 +44,7 @@ public:
 	CButton m_buttonServer;
 	CButton m_buttonReset;
 	CComboBox m_comboEncoding;
+	CComboBox m_comboCompression;
 	CButton m_buttonSoundPanel;
 	bool m_bStarted;
 };

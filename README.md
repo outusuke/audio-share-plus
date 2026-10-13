@@ -92,7 +92,7 @@ as-cmd -b --compression=none       # raw PCM, for older apps
 - The app shows the codec, lost and late packets, dropped packets and underruns under the playback status.
 - If the server was built without Opus support, it defaults to PCM.
 - The app hides one to three lost Opus packets by repeating and fading the last frame. The Latency / Stability slider on the Audio tab picks how much buffering it keeps.
-- The Windows GUI server doesn't have this option yet.
+- The Windows GUI server sends Opus at 128 kbit/s by default. Pick another bitrate, or uncompressed PCM, in the Compression box on the Server tab.
 
 
 ## Battery Saving (Silence Detection)
@@ -139,7 +139,7 @@ There are two kinds of audio format:
 - Capture audio format
 - Transfer audio format
 
-With `--compression=none` (and for older apps and the Windows GUI server) the transfer audio format is uncompressed PCM, the same as the capture audio format. With Opus, the command line server's default, the stream is 48 kHz Opus that the app decodes to 16-bit PCM; see [Audio Compression (Opus)](#audio-compression-opus).
+With `--compression=none` (and for older apps) the transfer audio format is uncompressed PCM, the same as the capture audio format. With Opus, the default for both servers, the stream is 48 kHz Opus that the app decodes to 16-bit PCM; see [Audio Compression (Opus)](#audio-compression-opus).
 
 You can open `server.log` to see the transfer audio format.
 ```
@@ -243,7 +243,7 @@ Turns off or ignore battery optimizations can let it work.
 
 - Server MFC
     - vcpkg is required for install dependencies.
-    - Run `vcpkg install asio protobuf spdlog[wchar] wil nlohmann-json` to install deps. The vcpkg triplet is `x64-windows-static-md`.
+    - Run `vcpkg install asio protobuf opus spdlog[wchar] wil nlohmann-json` to install deps. The vcpkg triplet is `x64-windows-static-md`.
     - Visual Studio 2022 with "Desktop development with C++" workload and "C++ MFC for latest v143 build tools (x86 & x64)" option is required for compiling.
 
 - Server CMD
