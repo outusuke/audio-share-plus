@@ -19,7 +19,12 @@
 
 #ifdef AUDIO_SHARE_WITH_OPUS
 
+// vcpkg puts opus.h under include/opus/, which MSBuild does not add to the search path
+#if __has_include(<opus/opus.h>)
+#include <opus/opus.h>
+#else
 #include <opus.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
