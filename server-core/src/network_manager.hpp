@@ -53,6 +53,8 @@ class network_manager : public std::enable_shared_from_this<network_manager>
         size_t sends_dropped = 0;
         std::chrono::steady_clock::time_point last_drop_log;
         std::chrono::steady_clock::time_point last_tick;
+        std::chrono::steady_clock::time_point last_audio;
+        std::chrono::seconds idle_heartbeat { 0 }; // 0: classic fixed-rate heartbeat
     };
 
     using playing_peer_list_t = std::map<std::shared_ptr<tcp_socket>, std::shared_ptr<peer_info_t>>;
@@ -67,6 +69,7 @@ class network_manager : public std::enable_shared_from_this<network_manager>
 
 public:
     static constexpr uint32_t cap_opus = 1u << 0;
+    static constexpr uint32_t cap_idle_heartbeat = 1u << 1;
 
 private:
 
@@ -94,14 +97,15 @@ private:
     asio::awaitable<void> handshake_watchdog(std::shared_ptr<tcp_socket> peer);
     
     playing_peer_list_t::iterator close_session(std::shared_ptr<tcp_socket>& peer);
-    int add_playing_peer(std::shared_ptr<tcp_socket>& peer, bool opus);
+    int add_playing_peer(std::shared_ptr<tcp_socket>& peer, bool opus, bool idle_heartbeat);
     playing_peer_list_t::iterator remove_playing_peer(std::shared_ptr<tcp_socket>& peer);
     void fill_udp_peer(int id, asio::ip::udp::endpoint udp_peer);
     void update_peer_counts();
 
     using segment_list_t = std::list<std::shared_ptr<std::vector<uint8_t>>>;
     bool ensure_codec();
-    std::string get_format_binary_for(uint32_t client_caps, bool& opus);
+    std::string get_format_binary_for(uint32_t client_caps, bool& opus, bool& idle_heartbeat);
+    static std::chrono::seconds heartbeat_timeout_for(std::chrono::seconds interval);
     void send_segments(segment_list_t pcm_segments, segment_list_t opus_segments);
     void note_send_drop(peer_info_t& info);
     void encode_loop();
@@ -120,7 +124,9 @@ private:
     std::unique_ptr<discovery::server> _discovery;
     bool _discovery_enabled = false;
     playing_peer_list_t _playing_peer_list;
-    constexpr static auto _heartbeat_timeout = std::chrono::seconds(5);
+    constexpr static auto _heartbeat_interval = std::chrono::seconds(3);
+    constexpr static auto _idle_heartbeat_interval = std::chrono::seconds(20);
+    constexpr static auto _audio_flowing_window = std::chrono::seconds(1);
     constexpr static auto _handshake_timeout = std::chrono::seconds(10);
     static constexpr int max_sessions = 16;
     static constexpr size_t max_sends_in_flight = 256; // per client

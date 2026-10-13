@@ -102,7 +102,7 @@ as-cmd -b --silence-timeout=5      # wait 5 s of silence before pausing
 as-cmd -b --silence-timeout=0      # always stream, even silence
 ```
 - Short pauses (for example between tracks) shorter than the timeout don't interrupt the stream.
-- The TCP heartbeat (every 3 s) keeps running so the connection stays up; resuming is instant.
+- The TCP heartbeat is skipped while audio flows and slows to every 20 s during silence, so the connection stays up and resuming is instant. Older apps keep the 3 s heartbeat.
 
 
 ## Configure Firewall Rules on Linux

@@ -250,6 +250,7 @@ void audio_manager::do_loopback_recording(std::shared_ptr<network_manager> netwo
     std::error_code ec;
 
     timer.expires_at(std::chrono::steady_clock::now());
+    std::vector<char> silence;
 
     do {
         timer.expires_at(timer.expiry() + duration);
@@ -276,7 +277,14 @@ void audio_manager::do_loopback_recording(std::shared_ptr<network_manager> netwo
         int bytes_per_frame = pCaptureFormat->nBlockAlign;
         size_t count = numFramesAvailable * bytes_per_frame;
 
-        network_manager->broadcast_audio_data((const char*)pData, count, pCaptureFormat->nBlockAlign);
+        const char* data = (const char*)pData;
+        if (dwFlags & AUDCLNT_BUFFERFLAGS_SILENT) {
+            // pData is undefined when flagged silent; 8-bit PCM is unsigned
+            silence.assign(count, pCaptureFormat->wBitsPerSample == 8 ? (char)0x80 : (char)0);
+            data = silence.data();
+        }
+
+        network_manager->broadcast_audio_data(data, count, pCaptureFormat->nBlockAlign);
 
 #ifdef DEBUG
         frame_count += numFramesAvailable;
