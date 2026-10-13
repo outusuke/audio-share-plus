@@ -41,6 +41,7 @@ void CServerTabPanel::DoDataExchange(CDataExchange* pDX)
     DDX_Control(pDX, IDC_BUTTON_SERVER, m_buttonServer);
     DDX_Control(pDX, IDC_BUTTON_RESET, m_buttonReset);
     DDX_Control(pDX, IDC_COMBO_ENCODING, m_comboEncoding);
+    DDX_Control(pDX, IDC_COMBO_COMPRESSION, m_comboCompression);
     DDX_Control(pDX, IDC_BUTTON_SOUND_PANEL, m_buttonSoundPanel);
 }
 
@@ -160,6 +161,35 @@ void CServerTabPanel::OnBnClickedButtonReset()
             m_comboEncoding.SetCurSel(0);
         }
     }
+
+    // compression list, item data is the Opus bitrate in bit/s and 0 means uncompressed
+    {
+        m_comboCompression.ResetContent();
+        constexpr int defaultBitrate = 128000;
+        std::vector<std::pair<int, std::wstring>> array = {
+            { 0, L"None (uncompressed PCM)" },
+            { 64000, L"Opus 64 kbit/s" },
+            { 96000, L"Opus 96 kbit/s" },
+            { defaultBitrate, L"Opus 128 kbit/s" },
+            { 192000, L"Opus 192 kbit/s" },
+        };
+        for (auto&& [bitrate, name] : array) {
+            auto nIndex = m_comboCompression.AddString(name.c_str());
+            m_comboCompression.SetItemData(nIndex, bitrate);
+        }
+
+        auto configBitrate = theApp.GetProfileIntW(L"Capture", L"bitrate", defaultBitrate);
+        for (int nIndex = 0; nIndex < m_comboCompression.GetCount(); ++nIndex) {
+            if (configBitrate == (int)m_comboCompression.GetItemData(nIndex)) {
+                m_comboCompression.SetCurSel(nIndex);
+                break;
+            }
+        }
+        if (m_comboCompression.GetCurSel() == CB_ERR) {
+            theApp.WriteProfileInt(L"Capture", L"bitrate", defaultBitrate);
+            m_comboCompression.SetCurSel(3);
+        }
+    }
 }
 
 void CServerTabPanel::OnBnClickedStartServer()
@@ -193,6 +223,12 @@ void CServerTabPanel::OnBnClickedStartServer()
         audio_manager::capture_config config;
         config.endpoint_id = wchars_to_mbs((LPCWSTR)m_comboBoxAudioEndpoint.GetItemDataPtr(m_comboBoxAudioEndpoint.GetCurSel()));
         config.encoding = (audio_manager::encoding_t)m_comboEncoding.GetItemData(m_comboEncoding.GetCurSel());
+        const int bitrate = (int)m_comboCompression.GetItemData(m_comboCompression.GetCurSel());
+        if (bitrate > 0) {
+            config.bitrate = bitrate;
+        } else {
+            config.compression = audio_manager::compression_t::compression_none;
+        }
         try {
             m_network_manager->start_server(host, port, config);
         }
@@ -216,6 +252,7 @@ void CServerTabPanel::OnBnClickedStartServer()
         theApp.WriteProfileStringW(L"Network", L"port", port_str);
         theApp.WriteProfileStringW(L"Capture", L"endpoint", mbs_to_wchars(config.endpoint_id).c_str());
         theApp.WriteProfileInt(L"Capture", L"encoding", (int)config.encoding);
+        theApp.WriteProfileInt(L"Capture", L"bitrate", bitrate);
         theApp.WriteProfileInt(L"App", L"Running", true);
         m_bStarted = true;
     }
@@ -242,6 +279,7 @@ void CServerTabPanel::EnableInputControls(bool bEnable)
     m_comboBoxAudioEndpoint.EnableWindow(bEnable);
     m_buttonReset.EnableWindow(bEnable);
     m_comboEncoding.EnableWindow(bEnable);
+    m_comboCompression.EnableWindow(bEnable);
     m_buttonSoundPanel.EnableWindow(bEnable);
 }
 

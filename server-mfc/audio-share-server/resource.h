@@ -46,6 +46,7 @@
 #define IDC_STATIC_COPYRIGHT            1214
 #define IDC_STATIC_NAME                 1215
 #define IDC_COMBO_LANGUAGE              1216
+#define IDC_COMBO_COMPRESSION           1217
 #define ID_APP_SHOW                     32771
 #define ID_START_SERVER                 32772
 

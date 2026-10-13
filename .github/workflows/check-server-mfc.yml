@@ -44,7 +44,7 @@ jobs:
 
       - run: vcpkg integrate install
 
-      - run: vcpkg install asio protobuf spdlog[wchar] wil nlohmann-json
+      - run: vcpkg install asio protobuf opus spdlog[wchar] wil nlohmann-json
 
       - name: Build
         run: msbuild audio-share-server.sln /m /nologo "/t:audio-share-server" "/p:Configuration=Release;Platform=x64" "/clp:ErrorsOnly;Summary" "/flp:logfile=msbuild.log;verbosity=normal"

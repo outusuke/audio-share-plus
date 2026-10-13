@@ -94,7 +94,7 @@ jobs:
       
       - run: vcpkg integrate install
       
-      - run: vcpkg install asio protobuf spdlog[wchar] wil nlohmann-json
+      - run: vcpkg install asio protobuf opus spdlog[wchar] wil nlohmann-json
       
       - run: msbuild /m /p:Configuration=Release,Platform=x64
       
