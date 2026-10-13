@@ -51,6 +51,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.UnresolvedAddressException
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -180,14 +181,16 @@ class NetClient(val context: Context) {
                 .bind(InetSocketAddress(tcpSocket.localAddress.toJavaAddress().address, 0))
 
             // heartbeat loop
+            val heartbeatInterval = if (audioFormat.idleHeartbeatMs > 0) audioFormat.idleHeartbeatMs.milliseconds else 3.seconds
+            val heartbeatTimeout = heartbeatInterval + maxOf(2.seconds, heartbeatInterval / 2)
             scope.launch {
                 _heartbeatLastTick = TimeSource.Monotonic.markNow()
                 while (true) {
                     if (BuildConfig.DEBUG) Log.d(tag, "check heartbeat")
-                    if (TimeSource.Monotonic.markNow() - _heartbeatLastTick > 5.seconds) {
+                    if (TimeSource.Monotonic.markNow() - _heartbeatLastTick > heartbeatTimeout) {
                         throw HeartbeatTimeoutException()
                     }
-                    delay(3.seconds)
+                    delay(heartbeatInterval)
                 }
             }
             scope.launch {
@@ -210,14 +213,19 @@ class NetClient(val context: Context) {
                 while (true) {
                     val buf = udpSocket.readByteBuffer()
                     _receivedAudio = true
+                    // the server skips heartbeats while audio flows
+                    _heartbeatLastTick = TimeSource.Monotonic.markNow()
                     _callback?.onReceiveAudioData(buf.order(ByteOrder.LITTLE_ENDIAN))
                 }
             }
             // UDP can lose the registration datagram, so repeat it until audio shows up
             scope.launch {
+                var wait = 500L
                 while (!_receivedAudio) {
                     udpSocket.writeIntLE(id, InetSocketAddress(host, port))
-                    delay(500)
+                    delay(wait)
+                    // a silent server never answers, don't keep waking the radio
+                    wait = minOf(wait * 2, 5000L)
                 }
             }
         }
@@ -254,7 +262,7 @@ class NetClient(val context: Context) {
         val expected = if (useV2) CMD.CMD_GET_FORMAT_V2 else CMD.CMD_GET_FORMAT
         write.writeCMD(expected)
         if (useV2) {
-            write.writeIntLE(if (opusDecoderAvailable()) CAP_OPUS else 0)
+            write.writeIntLE((if (opusDecoderAvailable()) CAP_OPUS else 0) or CAP_IDLE_HEARTBEAT)
         }
         if (read.readCMD() != expected) {
             throw Exception("unexpected reply to the format request")
@@ -277,5 +285,6 @@ class NetClient(val context: Context) {
 
     companion object {
         const val CAP_OPUS = 1
+        const val CAP_IDLE_HEARTBEAT = 2
     }
 }

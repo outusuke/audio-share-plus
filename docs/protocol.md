@@ -14,7 +14,7 @@ sequenceDiagram
     TCP Server -->> TCP Client : id
     
     par
-        loop every 3s
+        loop every 3s, or see Heartbeat
             TCP Server ->> TCP Client : CMD_HEARTBEAT
             TCP Client -->> TCP Server : CMD_HEARTBEAT
         end
@@ -67,10 +67,23 @@ The command line server uses Opus by default; start it with `--compression=none`
 
 ### Capability negotiation
 
-`CMD_GET_FORMAT_V2` (value 4) is `CMD_GET_FORMAT` followed by a little-endian `uint32` of client capability bits. Bit 0 (`CAP_OPUS`) means the client can decode Opus; a client with no working Opus decoder sends 0. Bits 1 to 31 are unused and should be sent as 0, so a future capability such as FEC or authentication can take a bit instead of needing a new command. The server answers with the same command id, and describes the Opus stream only to clients that set the bit. Everyone else, including clients that still send `CMD_GET_FORMAT`, gets raw PCM, so old and new clients can be connected to the same server. An older server doesn't know `CMD_GET_FORMAT_V2` and may close the connection; a client whose V2 handshake fails can reconnect and use `CMD_GET_FORMAT` instead.
+`CMD_GET_FORMAT_V2` (value 4) is `CMD_GET_FORMAT` followed by a little-endian `uint32` of client capability bits. Bit 0 (`CAP_OPUS`) means the client can decode Opus; a client with no working Opus decoder sends 0. Bit 1 (`CAP_IDLE_HEARTBEAT`) means the client understands the relaxed heartbeat described below. Bits 2 to 31 are unused and should be sent as 0, so a future capability such as FEC or authentication can take a bit instead of needing a new command. The server answers with the same command id, and describes the Opus stream only to clients that set the bit. Everyone else, including clients that still send `CMD_GET_FORMAT`, gets raw PCM, so old and new clients can be connected to the same server. An older server doesn't know `CMD_GET_FORMAT_V2` and may close the connection; a client whose V2 handshake fails can reconnect and use `CMD_GET_FORMAT` instead.
 
 The UDP registration (the client sending its `id`) only counts when it comes from the same IP address as the TCP connection.
 
 ## Silence
 
-The server may stop sending UDP datagrams while the captured audio is silent (`--silence-timeout`, 2 s by default) and resumes when sound returns. The TCP heartbeat is unaffected. Clients must tolerate gaps in the UDP stream and should not treat them as an error; the Android app pauses its `AudioTrack` during the gap.
+The server may stop sending UDP datagrams while the captured audio is silent (`--silence-timeout`, 2 s by default) and resumes when sound returns. Clients must tolerate gaps in the UDP stream and should not treat them as an error; the Android app pauses its `AudioTrack` during the gap.
+
+
+## Heartbeat
+
+By default the server sends `CMD_HEARTBEAT` every 3 s and closes the session if the client's echo is more than 5 s late. The client closes the connection if no heartbeat arrives within 5 s.
+
+A client that sets `CAP_IDLE_HEARTBEAT` gets `AudioFormat.idle_heartbeat_ms` (field 6) in the reply, and then:
+
+- The server sends no heartbeat while it has sent audio to that client in the last second. The server counts the audio it sent, and the client the audio it received, as proof of life.
+- During silence the server sends one every `idle_heartbeat_ms` (20 s).
+- The timeout on both sides becomes `interval + max(2 s, interval / 2)`, so 30 s for 20 s.
+
+Servers that don't know the capability leave the field at 0, and old clients never set the bit, so both keep the 3 s / 5 s behavior. A client must reply to every heartbeat it receives.

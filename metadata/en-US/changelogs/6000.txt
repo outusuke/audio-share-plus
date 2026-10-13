@@ -1,0 +1,8 @@
+Silence detection and server discovery
+- The server stops sending audio during silence so the phone can idle
+- Find servers on your network from the app (run the server with --discovery)
+- IPv6 support in the command line server
+- Opus streams hide short packet losses
+- Retry the UDP registration less often while the server is silent
+- Send fewer keep-alive messages while streaming and during silence
+- Windows: treat buffers flagged silent as silence

@@ -39,4 +39,5 @@ message AudioFormat
 	int32 sample_rate = 3;
 	Compression compression = 4;   // Absent (0) from servers that don't support compression.
 	int32 opus_pre_skip = 5;       // samples at 48 kHz to discard at stream start
+	int32 idle_heartbeat_ms = 6;     // 0: fixed 3 s heartbeat; otherwise see docs/protocol.md
 }

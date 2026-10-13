@@ -313,6 +313,7 @@ asio::awaitable<void> network_manager::read_loop(std::shared_ptr<tcp_socket> pee
 {
     uint32_t client_caps = 0;
     bool wire_opus = false;
+    bool wire_idle_heartbeat = false;
 
     while (true) {
         cmd_t cmd = cmd_t::cmd_none;
@@ -336,7 +337,7 @@ asio::awaitable<void> network_manager::read_loop(std::shared_ptr<tcp_socket> pee
             } else {
                 client_caps = 0; // old clients can't play Opus
             }
-            auto format = get_format_binary_for(client_caps, wire_opus);
+            auto format = get_format_binary_for(client_caps, wire_opus, wire_idle_heartbeat);
             auto size = (uint32_t)format.size();
             std::array<asio::const_buffer, 3> buffers = {
                 asio::buffer(&cmd, sizeof(cmd)),
@@ -350,7 +351,7 @@ asio::awaitable<void> network_manager::read_loop(std::shared_ptr<tcp_socket> pee
                 break;
             }
         } else if (cmd == cmd_t::cmd_start_play) {
-            int id = add_playing_peer(peer, wire_opus);
+            int id = add_playing_peer(peer, wire_opus, wire_idle_heartbeat);
             if (id <= 0) {
                 spdlog::error("{} id error", __func__);
                 close_session(peer);
@@ -388,9 +389,18 @@ asio::awaitable<void> network_manager::heartbeat_loop(std::shared_ptr<tcp_socket
     std::error_code ec;
     size_t _;
 
+    auto first = _playing_peer_list.find(peer);
+    if (first == _playing_peer_list.end()) {
+        co_return;
+    }
+    const auto info = first->second;
+    const bool idle_mode = info->idle_heartbeat.count() > 0;
+    const auto interval = idle_mode ? info->idle_heartbeat : _heartbeat_interval;
+    const auto timeout = heartbeat_timeout_for(interval);
+
     steady_timer timer(*_ioc);
     while (true) {
-        timer.expires_after(3s);
+        timer.expires_after(interval);
         std::tie(ec) = co_await timer.async_wait();
         if (ec) {
             break;
@@ -406,7 +416,13 @@ asio::awaitable<void> network_manager::heartbeat_loop(std::shared_ptr<tcp_socket
             close_session(peer);
             break;
         }
-        if (std::chrono::steady_clock::now() - it->second->last_tick > _heartbeat_timeout) {
+        const auto now = std::chrono::steady_clock::now();
+        if (idle_mode && now - info->last_audio < _audio_flowing_window) {
+            // the client counts incoming audio as proof of life
+            continue;
+        }
+        const auto alive_since = idle_mode ? std::max(info->last_tick, info->last_audio) : info->last_tick;
+        if (now - alive_since > timeout) {
             spdlog::info("{} timeout", remote_str(*it->first));
             close_session(peer);
             break;
@@ -421,6 +437,11 @@ asio::awaitable<void> network_manager::heartbeat_loop(std::shared_ptr<tcp_socket
         }
     }
     spdlog::trace("stop {}", __func__);
+}
+
+std::chrono::seconds network_manager::heartbeat_timeout_for(std::chrono::seconds interval)
+{
+    return interval + std::max(2s, interval / 2);
 }
 
 asio::awaitable<void> network_manager::handshake_watchdog(std::shared_ptr<tcp_socket> peer)
@@ -513,7 +534,7 @@ static asio::ip::address normalize_address(const asio::ip::address& a)
     return a;
 }
 
-int network_manager::add_playing_peer(std::shared_ptr<tcp_socket>& peer, bool opus)
+int network_manager::add_playing_peer(std::shared_ptr<tcp_socket>& peer, bool opus, bool idle_heartbeat)
 {
     if (_playing_peer_list.contains(peer)) {
         spdlog::error("{} repeat add tcp://{}", __func__, remote_str(*peer));
@@ -529,6 +550,7 @@ int network_manager::add_playing_peer(std::shared_ptr<tcp_socket>& peer, bool op
 
     auto info = std::make_shared<peer_info_t>();
     info->opus = opus;
+    info->idle_heartbeat = idle_heartbeat ? _idle_heartbeat_interval : std::chrono::seconds(0);
     info->tcp_address = normalize_address(remote.address());
     info->last_tick = std::chrono::steady_clock::now();
 
@@ -629,23 +651,32 @@ bool network_manager::ensure_codec()
     return true;
 }
 
-std::string network_manager::get_format_binary_for(uint32_t client_caps, bool& opus)
+std::string network_manager::get_format_binary_for(uint32_t client_caps, bool& opus, bool& idle_heartbeat)
 {
     opus = false;
+    idle_heartbeat = false;
     if (!ensure_codec()) {
         return _audio_manager->get_format_binary();
     }
+
+    auto with_heartbeat = [&](audio_manager::AudioFormat format) {
+        if (client_caps & cap_idle_heartbeat) {
+            idle_heartbeat = true;
+            format.set_idle_heartbeat_ms((int32_t)std::chrono::milliseconds(_idle_heartbeat_interval).count());
+        }
+        return format.SerializeAsString();
+    };
 
 #ifdef AUDIO_SHARE_WITH_OPUS
     if (_opus_encoder) {
         if (client_caps & cap_opus) {
             opus = true;
-            return _opus_format.SerializeAsString();
+            return with_heartbeat(_opus_format);
         }
         spdlog::info("client doesn't support opus, sending raw PCM");
     }
 #endif
-    return _raw_format.SerializeAsString();
+    return with_heartbeat(_raw_format);
 }
 
 void network_manager::broadcast_audio_data(const char* data, size_t count, int block_align)
@@ -733,10 +764,12 @@ void network_manager::send_segments(segment_list_t pcm_segments, segment_list_t 
     }
 
     _ioc->post([pcm_segments = std::move(pcm_segments), opus_segments = std::move(opus_segments), self = shared_from_this()] {
+        const auto now = std::chrono::steady_clock::now();
         for (auto& [peer, info] : self->_playing_peer_list) {
             if (info->udp_peer.port() == 0) {
                 continue;
             }
+            info->last_audio = now;
             for (const auto& seg : info->opus ? opus_segments : pcm_segments) {
                 if (info->sends_in_flight >= max_sends_in_flight) {
                     self->note_send_drop(*info);
