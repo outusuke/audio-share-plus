@@ -98,6 +98,11 @@ class MainActivity : ComponentActivity() {
                 awaitMediaController().play()
             }
         }
+
+        // a cold start delivers the notification intent here, not to onNewIntent
+        if (savedInstanceState == null) {
+            handleIntent(intent)
+        }
     }
 
     override fun onDestroy() {
@@ -112,7 +117,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        handleIntent(intent)
+    }
 
+    private fun handleIntent(intent: Intent) {
         // tap update notification to start downloading
         if (intent.getStringExtra("action") == "update") {
 
