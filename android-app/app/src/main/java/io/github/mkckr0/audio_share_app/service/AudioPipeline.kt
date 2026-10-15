@@ -101,7 +101,7 @@ class AudioPipeline(
                         Thread.sleep(PREBUFFER_POLL_MS)
                     }
                 } else {
-                    val packet = queue.poll(100, TimeUnit.MILLISECONDS)
+                    val packet = queue.poll(pollTimeoutMs(), TimeUnit.MILLISECONDS)
                     if (packet != null) {
                         windowMin = min(windowMin, queue.size)
                         handle(packet)
@@ -116,6 +116,10 @@ class AudioPipeline(
             decoder?.release()
         }
     }
+
+    // nothing arrived for a while, only wake up to notice shutdown
+    private fun pollTimeoutMs(): Long =
+        if (SystemClock.elapsedRealtime() - lastArrivalMs > IDLE_AFTER_MS) IDLE_POLL_MS else ACTIVE_POLL_MS
 
     private fun handle(packet: ByteBuffer) {
         if (decoder == null) {
@@ -273,7 +277,7 @@ class AudioPipeline(
     }
 
     private fun reportStats(now: Long) {
-        if (now - lastStatsAt < STATS_INTERVAL_MS || (!started && queue.isEmpty())) {
+        if (now - lastStatsAt < STATS_INTERVAL_MS || (!started && queue.isEmpty()) || now - lastArrivalMs > IDLE_AFTER_MS) {
             return
         }
         lastStatsAt = now
@@ -305,7 +309,10 @@ class AudioPipeline(
         private const val MIN_QUEUE_PACKETS = 4
         private const val MAX_CONCEAL_PACKETS = 3
         private const val PREBUFFER_POLL_MS = 5L
-        private const val IDLE_PARK_NS = 500_000_000L
+        private const val IDLE_PARK_NS = 30_000_000_000L
+        private const val ACTIVE_POLL_MS = 100L
+        private const val IDLE_POLL_MS = 10_000L
+        private const val IDLE_AFTER_MS = 2000L
         private const val PREBUFFER_TIMEOUT_MS = 1000L
         private const val TICK_MS = 50L
         private const val DRIFT_WINDOW_MS = 2000L

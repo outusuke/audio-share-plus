@@ -307,8 +307,12 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 .setTransferMode(AudioTrack.MODE_STREAM)
             // Effects generally cannot be attached to fast-mixer (low-latency) tracks, so only
             // request low latency when no loudness enhancer is wanted.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && loudnessEnhancerGain <= 0) {
-                trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (profile.deepBuffer) {
+                    trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_POWER_SAVING)
+                } else if (loudnessEnhancerGain <= 0) {
+                    trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                }
             }
             _audioTrack = trackBuilder.build()
 
