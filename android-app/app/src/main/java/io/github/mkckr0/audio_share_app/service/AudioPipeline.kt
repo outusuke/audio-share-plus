@@ -10,6 +10,7 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.LockSupport
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -69,12 +70,16 @@ class AudioPipeline(
         jitter.onPacket(nowNs, durationMs)
         lastArrivalMs = nowNs / 1_000_000
 
+        val wasEmpty = queue.isEmpty()
         // hard cap only; the consumer trims steady backlog (drift) on its own
         while (!queue.offer(packet)) {
             if (queue.poll() != null) {
                 overflowDrops.incrementAndGet()
                 resyncPending.set(true)
             }
+        }
+        if (wasEmpty) {
+            LockSupport.unpark(this)
         }
     }
 
@@ -89,7 +94,12 @@ class AudioPipeline(
         try {
             while (running) {
                 if (!started && !gateOpen && !prebuffered()) {
-                    Thread.sleep(PREBUFFER_POLL_MS)
+                    if (queue.isEmpty()) {
+                        // submit() unparks us when data shows up
+                        LockSupport.parkNanos(IDLE_PARK_NS)
+                    } else {
+                        Thread.sleep(PREBUFFER_POLL_MS)
+                    }
                 } else {
                     val packet = queue.poll(100, TimeUnit.MILLISECONDS)
                     if (packet != null) {
@@ -263,7 +273,7 @@ class AudioPipeline(
     }
 
     private fun reportStats(now: Long) {
-        if (now - lastStatsAt < STATS_INTERVAL_MS) {
+        if (now - lastStatsAt < STATS_INTERVAL_MS || (!started && queue.isEmpty())) {
             return
         }
         lastStatsAt = now
@@ -295,6 +305,7 @@ class AudioPipeline(
         private const val MIN_QUEUE_PACKETS = 4
         private const val MAX_CONCEAL_PACKETS = 3
         private const val PREBUFFER_POLL_MS = 5L
+        private const val IDLE_PARK_NS = 500_000_000L
         private const val PREBUFFER_TIMEOUT_MS = 1000L
         private const val TICK_MS = 50L
         private const val DRIFT_WINDOW_MS = 2000L

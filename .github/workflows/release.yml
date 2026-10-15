@@ -183,6 +183,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       
       - run: chmod +x ./scripts/get_version.sh
       
@@ -191,7 +193,12 @@ jobs:
           path: release_bin
       
       - name: Generate release notes
-        run: 'echo -e "$(cat ./metadata/en-US/changelogs/$(bash ./scripts/get_version.sh -c).txt)" > notes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prev=$(gh release list --exclude-drafts --limit 1 --json tagName -q '.[0].tagName')
+          range=${prev:+$prev..HEAD}
+          git log --no-merges --pretty='- %s' ${range:--30} > notes
       
       - name: Create Github Release
         run: |
