@@ -1,0 +1,79 @@
+name: Build Android
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply VERSION
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/apply_version.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+
+      # forks and pull requests have no secrets, so this stays a no-op there
+      - name: Set up release signing
+        env:
+          release_jks: ${{ secrets.RELEASE_JKS }}
+          store_pass: ${{ secrets.STORE_PASS }}
+          key_alias: ${{ secrets.KEY_ALIAS }}
+          key_pass: ${{ secrets.KEY_PASS }}
+        run: |
+          if [ -n "$release_jks" ]; then
+            mkdir -p ~/.android
+            echo "$release_jks" | base64 -d > ~/.android/release.jks
+            printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              ~/.android/release.jks "$store_pass" "$key_alias" "$key_pass" > keystore.properties
+          fi
+
+      - name: Create debug keystore
+        run: |
+          ks=~/.config/.android/debug.keystore
+          if [ ! -f "$ks" ]; then
+            mkdir -p "$(dirname "$ks")"
+            keytool -genkeypair -keystore "$ks" -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - run: chmod +x gradlew
+      - run: ./gradlew :app:assembleRelease
+
+      - name: Report signing key
+        run: |
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          for apk in app/build/outputs/apk/release/*.apk; do
+            certs=$("$apksigner" verify --print-certs "$apk")
+            echo "$certs"
+            if echo "$certs" | grep -qi "CN=Android Debug"; then
+              echo "::notice::$(basename "$apk") is signed with the debug key and will not update a release install"
+            fi
+          done
+
+      - name: Checksum
+        run: cd app/build/outputs/apk/release/ && sha256sum *.apk | tee $(ls *.apk).sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            android-app/app/build/outputs/apk/release/*.apk
+            android-app/app/build/outputs/apk/release/*.sha256
+          if-no-files-found: error
+          retention-days: 14
