@@ -51,8 +51,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -202,6 +204,10 @@ fun SettingsScreen() {
                             5, TimeUnit.MINUTES,
 //                            PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS, TimeUnit.MILLISECONDS,
 //                            PeriodicWorkRequest.MIN_PERIODIC_FLEX_MILLIS, TimeUnit.MILLISECONDS,
+                        ).setConstraints(
+                            Constraints.Builder()
+                                .setRequiredNetworkType(NetworkType.UNMETERED)
+                                .build()
                         ).build()
                     workManager.enqueueUniquePeriodicWork(
                         WorkName.AUTO_CHECK_UPDATE.value,

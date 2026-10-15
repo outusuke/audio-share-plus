@@ -94,6 +94,9 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
     private var _pipeline: AudioPipeline? = null
     private var _wifiLock: WifiManager.WifiLock? = null
 
+    @Volatile
+    private var wifiLockWanted = false
+
     private var _loudnessEnhancer: LoudnessEnhancer? = null
 
     private val scope: CoroutineScope = MainScope()
@@ -141,7 +144,6 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                     .setPlayWhenReady(true, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
                     .build()
 
-                acquireWifiLock()
                 netClient.start(
                     host = host,
                     port = port,
@@ -194,6 +196,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
         // case so the audio hardware can idle too, and restart it when data comes back.
         private var lastDataTime = SystemClock.elapsedRealtime()
         private var audioIdle = false
+        @Volatile
         private var idleWatchdog: Job? = null
 
         override suspend fun log(message: String) {
@@ -282,6 +285,10 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             )
             Log.i(tag, "latency profile: $profile")
 
+            wifiLockWanted = profile.holdWifiLock
+            releaseWifiLock()
+            acquireWifiLock()
+
             val trackBuilder = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -350,17 +357,20 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             lastDataTime = SystemClock.elapsedRealtime()
             idleWatchdog = scope.launch {
                 while (true) {
-                    delay(1.seconds)
-                    if (!audioIdle && SystemClock.elapsedRealtime() - lastDataTime > IDLE_TIMEOUT_MS) {
-                        audioIdle = true
-                        Log.d(tag, "no audio data, pausing AudioTrack")
-                        // nothing to keep low-latency while the server is silent
-                        releaseWifiLock()
-                        _audioTrack?.run {
-                            pause()
-                            flush()
-                        }
+                    val remaining = IDLE_TIMEOUT_MS - (SystemClock.elapsedRealtime() - lastDataTime)
+                    if (remaining > 0) {
+                        delay(remaining)
+                        continue
                     }
+                    audioIdle = true
+                    Log.d(tag, "no audio data, pausing AudioTrack")
+                    // nothing to keep low-latency while the server is silent
+                    releaseWifiLock()
+                    _audioTrack?.run {
+                        pause()
+                        flush()
+                    }
+                    break
                 }
             }
         }
@@ -373,6 +383,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 Log.d(tag, "audio data again, resuming AudioTrack")
                 acquireWifiLock()
                 _audioTrack?.play()
+                startIdleWatchdog()
             }
             _pipeline?.submit(audioData)
         }
@@ -441,7 +452,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
     // Wi-Fi power save adds latency spikes to the UDP stream
     @Synchronized
     private fun acquireWifiLock() {
-        if (_wifiLock?.isHeld == true) {
+        if (!wifiLockWanted || _wifiLock?.isHeld == true) {
             return
         }
         try {
