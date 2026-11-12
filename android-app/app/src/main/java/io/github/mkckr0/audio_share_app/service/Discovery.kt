@@ -28,6 +28,7 @@ import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
 data class DiscoveredServer(val host: String, val port: Int, val name: String)
@@ -84,6 +85,24 @@ object Discovery {
             }
         } catch (_: Exception) {
             // the limited broadcast below still works on most networks
+        }
+        // The active network is only the phone's default (mobile data or Wi-Fi). USB, Wi-Fi
+        // and Bluetooth tethering run on separate downstream interfaces (rndis0, ncm0, ...)
+        // that never become the active network, and Android routes 255.255.255.255 out of the
+        // default network, so a PC on a tethered link is only reached through its subnet
+        // broadcast. Ask every interface that is up for its IPv4 broadcast address.
+        try {
+            NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { nif ->
+                if (nif.isUp && !nif.isLoopback) {
+                    nif.interfaceAddresses.forEach { ia ->
+                        val broadcast = ia.broadcast
+                        if (ia.address is Inet4Address && broadcast != null) {
+                            targets.add(broadcast)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
         }
         targets.add(InetAddress.getByName("255.255.255.255"))
         return targets
