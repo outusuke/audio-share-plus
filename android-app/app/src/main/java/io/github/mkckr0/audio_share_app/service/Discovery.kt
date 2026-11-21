@@ -108,35 +108,78 @@ object Discovery {
         return targets
     }
 
+    private const val RECEIVE_SLICE_MS = 30
+
+    private class Probe(val socket: DatagramSocket, val targets: Collection<InetAddress>)
+
+    private fun openProbe(local: InetAddress?, targets: Collection<InetAddress>): Probe {
+        val socket = DatagramSocket(null)
+        try {
+            socket.broadcast = true
+            socket.bind(InetSocketAddress(local, 0))
+            socket.soTimeout = RECEIVE_SLICE_MS
+        } catch (e: IOException) {
+            socket.close()
+            throw e
+        }
+        return Probe(socket, targets)
+    }
+
+    // Tethering links (rndis0, ncm0, ...) never become the active network, so only a socket bound
+    // to the interface's own address sends its broadcast out through that link.
+    private fun interfaceProbes(): List<Probe> {
+        val probes = ArrayList<Probe>()
+        try {
+            val limited = InetAddress.getByName("255.255.255.255")
+            NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { nif ->
+                if (!nif.isUp || nif.isLoopback) {
+                    return@forEach
+                }
+                nif.interfaceAddresses.forEach { ia ->
+                    val broadcast = ia.broadcast
+                    if (ia.address is Inet4Address && broadcast != null) {
+                        try {
+                            probes.add(openProbe(ia.address, listOf(broadcast, limited)))
+                        } catch (_: IOException) {
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return probes
+    }
+
     suspend fun scan(context: Context, listenMillis: Long = 1500): List<DiscoveredServer> = withContext(Dispatchers.IO) {
-        val targets = broadcastTargets(context)
         val request = buildRequest()
         val found = LinkedHashMap<String, DiscoveredServer>()
+        val probes = ArrayList<Probe>()
         try {
-            DatagramSocket(null).use { socket ->
-                socket.broadcast = true
-                socket.bind(InetSocketAddress(0))
-                socket.soTimeout = 100
-                val buffer = ByteArray(256)
-                val start = SystemClock.elapsedRealtime()
-                var requestsSent = 0
-                while (isActive && SystemClock.elapsedRealtime() - start < listenMillis) {
-                    // asked twice, in case the first datagram is lost on Wi-Fi
-                    val due = if (requestsSent == 0) 0L else 500L
-                    if (requestsSent < 2 && SystemClock.elapsedRealtime() - start >= due) {
-                        targets.forEach {
+            probes.add(openProbe(null, broadcastTargets(context)))
+            probes.addAll(interfaceProbes())
+            val buffer = ByteArray(256)
+            val start = SystemClock.elapsedRealtime()
+            var requestsSent = 0
+            while (isActive && SystemClock.elapsedRealtime() - start < listenMillis) {
+                // asked twice, in case the first datagram is lost on Wi-Fi
+                val due = if (requestsSent == 0) 0L else 500L
+                if (requestsSent < 2 && SystemClock.elapsedRealtime() - start >= due) {
+                    probes.forEach { probe ->
+                        probe.targets.forEach {
                             try {
-                                socket.send(DatagramPacket(request, request.size, it, PORT))
+                                probe.socket.send(DatagramPacket(request, request.size, it, PORT))
                             } catch (_: IOException) {
                             }
                         }
-                        requestsSent++
                     }
+                    requestsSent++
+                }
+                probes.forEach { probe ->
                     try {
                         val packet = DatagramPacket(buffer, buffer.size)
-                        socket.receive(packet)
-                        val reply = parseReply(packet.data, packet.length) ?: continue
-                        val host = packet.address.hostAddress ?: continue
+                        probe.socket.receive(packet)
+                        val reply = parseReply(packet.data, packet.length) ?: return@forEach
+                        val host = packet.address.hostAddress ?: return@forEach
                         found["$host:${reply.port}"] = DiscoveredServer(host, reply.port, reply.name)
                     } catch (_: SocketTimeoutException) {
                     }
@@ -144,6 +187,8 @@ object Discovery {
             }
         } catch (_: IOException) {
             // no network, report whatever was found
+        } finally {
+            probes.forEach { it.socket.close() }
         }
         found.values.toList()
     }
