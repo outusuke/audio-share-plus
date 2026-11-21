@@ -141,8 +141,23 @@ def service_enabled():
     return HAVE_SYSTEMD and systemctl("is-enabled", SERVICE).returncode == 0
 
 
-def service_active():
-    return HAVE_SYSTEMD and systemctl("is-active", SERVICE).returncode == 0
+def run_systemctl(args, done):
+    flags = Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE
+    try:
+        proc = Gio.Subprocess.new(["systemctl", "--user", *args], flags)
+    except GLib.Error as e:
+        done(1, e.message)
+        return
+
+    def finished(p, result):
+        try:
+            _ok, _out, err = p.communicate_utf8_finish(result)
+        except GLib.Error as e:
+            done(1, e.message)
+            return
+        done(p.get_exit_status(), (err or "").strip())
+
+    proc.communicate_utf8_async(None, None, finished)
 
 
 def launcher_paths():
@@ -188,7 +203,6 @@ def write_unit(args):
     command = shlex.join(args).replace("%", "%%").replace("$", "$$")
     UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
     UNIT_PATH.write_text(UNIT_TEMPLATE.format(exec=command))
-    systemctl("daemon-reload")
 
 
 class LineReader:
@@ -218,8 +232,17 @@ class Window(Gtk.ApplicationWindow):
         self.proc = None
         self.follower = None
         self.endpoint_ids = ["default"]
+        self.service_up = False
+        self.polling = False
+        self.busy = False
+        self.busy_label = ""
+        self.stopping = False
+        self.after_exit = None
+        self.apply_id = 0
+        self.quiet = 1
         self.build_ui()
         self.refresh_endpoints()
+        self.quiet = 0
         self.refresh_status()
         if self.autostart.get_active():
             self.follow_journal()
@@ -250,14 +273,17 @@ class Window(Gtk.ApplicationWindow):
 
         self.host = Gtk.Entry(hexpand=True, placeholder_text="Automatic")
         self.host.set_text(self.cfg["host"])
+        self.host.connect("notify::text", self.schedule_apply)
         self.add_row("Address", self.host)
 
         self.port = Gtk.SpinButton.new_with_range(1, 65535, 1)
         self.port.set_value(self.cfg["port"])
+        self.port.connect("value-changed", self.schedule_apply)
         self.add_row("Port", self.port)
 
         self.endpoint_model = Gtk.StringList()
         self.endpoint = Gtk.DropDown(model=self.endpoint_model, hexpand=True)
+        self.endpoint.connect("notify::selected", self.schedule_apply)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.connect("clicked", lambda _: self.refresh_endpoints())
         endpoint_box = Gtk.Box(spacing=6)
@@ -268,19 +294,23 @@ class Window(Gtk.ApplicationWindow):
         self.compression = Gtk.DropDown.new_from_strings(["Opus", "Uncompressed PCM"])
         self.compression.set_selected(COMPRESSION.index(self.cfg["compression"]))
         self.compression.connect("notify::selected", self.sync_bitrate)
+        self.compression.connect("notify::selected", self.schedule_apply)
         self.add_row("Compression", self.compression)
 
         self.bitrate = Gtk.SpinButton.new_with_range(16, 510, 8)
         self.bitrate.set_value(self.cfg["bitrate"])
+        self.bitrate.connect("value-changed", self.schedule_apply)
         self.add_row("Bitrate (kbit/s)", self.bitrate)
         self.sync_bitrate()
 
         self.silence = Gtk.SpinButton.new_with_range(0, 60, 1)
         self.silence.set_value(self.cfg["silence"])
+        self.silence.connect("value-changed", self.schedule_apply)
         self.add_row("Silence timeout (s)", self.silence)
 
         self.discovery = Gtk.Switch(halign=Gtk.Align.START)
         self.discovery.set_active(self.cfg["discovery"])
+        self.discovery.connect("notify::active", self.schedule_apply)
         self.add_row("Let the app find this server", self.discovery)
 
         self.autostart = Gtk.Switch(halign=Gtk.Align.START, sensitive=HAVE_SYSTEMD)
@@ -350,6 +380,7 @@ class Window(Gtk.ApplicationWindow):
         self.bitrate.set_sensitive(COMPRESSION[self.compression.get_selected()] == "opus")
 
     def refresh_endpoints(self):
+        self.quiet += 1
         found = list_endpoints(self.binary.get_text().strip())
         if found is None:
             self.append(f"Could not run the server binary. Install… copies {SOURCE_NAME} to {INSTALL_DIR / BINARY_NAME}")
@@ -359,6 +390,7 @@ class Window(Gtk.ApplicationWindow):
         self.endpoint_model.splice(0, self.endpoint_model.get_n_items(), labels)
         saved = self.cfg["endpoint"]
         self.endpoint.set_selected(self.endpoint_ids.index(saved) if saved in self.endpoint_ids else 0)
+        self.quiet -= 1
 
     def collect(self):
         return {
@@ -381,29 +413,109 @@ class Window(Gtk.ApplicationWindow):
         self.log.scroll_mark_onscreen(mark)
         buf.delete_mark(mark)
 
-    def refresh_status(self):
-        service_up = self.autostart.get_active() and service_active()
-        running = self.proc is not None or service_up
-        self.start_button.set_sensitive(not running)
-        self.stop_button.set_sensitive(running)
+    def is_running(self):
+        return self.proc is not None or self.service_up
+
+    def update_controls(self):
+        running = self.is_running()
+        working = self.busy or self.stopping
+        self.start_button.set_sensitive(not running and not working)
+        self.stop_button.set_sensitive(running and not working)
         self.uninstall_button.set_sensitive(
-            (INSTALL_DIR / BINARY_NAME).exists() or UNIT_PATH.exists() or DESKTOP_PATH.exists()
+            not working and ((INSTALL_DIR / BINARY_NAME).exists() or UNIT_PATH.exists() or DESKTOP_PATH.exists())
         )
-        if service_up:
+        if self.busy:
+            self.status.set_text(self.busy_label)
+        elif self.stopping:
+            self.status.set_text("Stopping…")
+        elif self.service_up:
             self.status.set_text("Running as a systemd service")
         elif self.proc is not None:
             self.status.set_text("Running")
         else:
             self.status.set_text("Stopped")
+
+    def refresh_status(self):
+        self.poll_service()
         return GLib.SOURCE_CONTINUE
+
+    def poll_service(self):
+        if not self.autostart.get_active():
+            self.service_up = False
+            self.update_controls()
+            return
+        if self.polling:
+            return
+        self.polling = True
+
+        def finished(code, _err):
+            self.polling = False
+            self.service_up = code == 0
+            self.update_controls()
+
+        run_systemctl(["is-active", SERVICE], finished)
+
+    def run_steps(self, steps, label, done=None):
+        self.busy = True
+        self.busy_label = label
+        self.update_controls()
+
+        def step(i):
+            if i == len(steps):
+                self.busy = False
+                self.poll_service()
+                if done:
+                    done()
+                return
+            if callable(steps[i]):
+                steps[i]()
+                step(i + 1)
+                return
+
+            def finished(code, err):
+                if code != 0:
+                    self.append(err or "systemctl failed")
+                step(i + 1)
+
+            run_systemctl(steps[i], finished)
+
+        step(0)
+
+    def set_autostart(self, active):
+        self.quiet += 1
+        self.autostart.set_active(active)
+        self.quiet -= 1
+
+    def schedule_apply(self, *_):
+        if self.quiet or not self.is_running():
+            return
+        if self.apply_id:
+            GLib.source_remove(self.apply_id)
+        self.apply_id = GLib.timeout_add(800, self.apply_now)
+
+    def apply_now(self):
+        self.apply_id = 0
+        if not self.is_running():
+            return GLib.SOURCE_REMOVE
+        if self.busy or self.stopping:
+            self.apply_id = GLib.timeout_add(500, self.apply_now)
+            return GLib.SOURCE_REMOVE
+        try:
+            build_args(self.collect())
+        except ValueError as e:
+            self.append(str(e))
+            return GLib.SOURCE_REMOVE
+        self.append("Settings changed, restarting the server")
+        self.stop_proc(then=self.start)
+        return GLib.SOURCE_REMOVE
 
     def on_start(self, _button):
         self.start()
-        self.refresh_status()
+        self.update_controls()
 
     def on_stop(self, _button):
         self.stop()
-        self.refresh_status()
+        self.update_controls()
 
     def on_uninstall(self, _button):
         dialog = Gtk.AlertDialog(
@@ -421,17 +533,22 @@ class Window(Gtk.ApplicationWindow):
                 return
         except GLib.Error:
             return
-        if self.proc is not None:
-            self.proc.send_signal(signal.SIGINT)
+
+        def remove_files():
+            (INSTALL_DIR / BINARY_NAME).unlink(missing_ok=True)
+            remove_launcher()
+            self.append("Uninstalled")
+
+        steps = [remove_files]
         if HAVE_SYSTEMD:
-            systemctl("disable", "--now", SERVICE)
-            UNIT_PATH.unlink(missing_ok=True)
-            systemctl("daemon-reload")
-        self.autostart.set_active(False)
-        (INSTALL_DIR / BINARY_NAME).unlink(missing_ok=True)
-        remove_launcher()
-        self.append("Uninstalled")
-        self.refresh_status()
+            steps = [
+                ["disable", "--now", SERVICE],
+                lambda: UNIT_PATH.unlink(missing_ok=True),
+                ["daemon-reload"],
+                remove_files,
+            ]
+        self.set_autostart(False)
+        self.stop_proc(then=lambda: self.run_steps(steps, "Uninstalling…"))
 
     def start(self):
         cfg = self.collect()
@@ -444,8 +561,7 @@ class Window(Gtk.ApplicationWindow):
             return
         if self.autostart.get_active():
             write_unit(args)
-            self.report(systemctl("restart", SERVICE))
-            self.follow_journal()
+            self.run_steps([["daemon-reload"], ["restart", SERVICE]], "Starting…", self.follow_journal)
             return
         try:
             self.proc = Gio.Subprocess.new(args, PIPE_FLAGS)
@@ -455,28 +571,43 @@ class Window(Gtk.ApplicationWindow):
         self.append("$ " + shlex.join(args))
         proc = self.proc
         LineReader(proc, self.append, lambda: self.on_exit(proc))
+        self.update_controls()
 
     def on_exit(self, proc):
-        if self.proc is proc:
-            self.proc = None
-            self.append("Server stopped")
-            self.refresh_status()
+        if self.proc is not proc:
+            return
+        self.proc = None
+        self.stopping = False
+        self.append("Server stopped")
+        after, self.after_exit = self.after_exit, None
+        self.update_controls()
+        if after:
+            after()
 
     def stop(self):
         if self.proc is not None:
-            self.proc.send_signal(signal.SIGINT)
-            GLib.timeout_add_seconds(5, self.force_stop, self.proc)
+            self.stop_proc()
         else:
-            self.report(systemctl("stop", SERVICE))
+            self.run_steps([["stop", SERVICE]], "Stopping…")
+
+    def stop_proc(self, then=None):
+        proc = self.proc
+        if proc is None:
+            if then:
+                then()
+            return
+        self.after_exit = then
+        if self.stopping:
+            return
+        self.stopping = True
+        proc.send_signal(signal.SIGINT)
+        GLib.timeout_add_seconds(5, self.force_stop, proc)
+        self.update_controls()
 
     def force_stop(self, proc):
         if self.proc is proc:
             proc.force_exit()
         return GLib.SOURCE_REMOVE
-
-    def report(self, result):
-        if result.returncode != 0:
-            self.append(result.stderr.strip() or "systemctl failed")
 
     def follow_journal(self):
         if self.follower or not shutil.which("journalctl"):
@@ -489,24 +620,27 @@ class Window(Gtk.ApplicationWindow):
         LineReader(self.follower, self.append, lambda: setattr(self, "follower", None))
 
     def on_autostart(self, switch, _param):
+        if self.quiet:
+            return
         if switch.get_active():
             try:
                 args = build_args(self.collect())
             except ValueError as e:
                 self.append(str(e))
-                switch.set_active(False)
+                self.set_autostart(False)
                 return
-            if self.proc is not None:
-                self.proc.send_signal(signal.SIGINT)
-            write_unit(args)
-            self.report(systemctl("enable", SERVICE))
-            self.report(systemctl("restart", SERVICE))
-            self.follow_journal()
+            self.stop_proc(then=lambda: self.enable_service(args))
         else:
-            self.report(systemctl("disable", "--now", SERVICE))
-            UNIT_PATH.unlink(missing_ok=True)
-            systemctl("daemon-reload")
-        self.refresh_status()
+            self.run_steps(
+                [["disable", "--now", SERVICE], lambda: UNIT_PATH.unlink(missing_ok=True), ["daemon-reload"]],
+                "Stopping…",
+            )
+
+    def enable_service(self, args):
+        write_unit(args)
+        self.run_steps(
+            [["daemon-reload"], ["enable", SERVICE], ["restart", SERVICE]], "Starting…", self.follow_journal
+        )
 
     def on_close(self, _window):
         save_config(self.collect())

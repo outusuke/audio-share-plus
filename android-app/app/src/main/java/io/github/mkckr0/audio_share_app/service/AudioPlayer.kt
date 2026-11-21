@@ -30,6 +30,7 @@ import androidx.annotation.OptIn
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -57,7 +58,9 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
@@ -102,6 +105,26 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
     private val scope: CoroutineScope = MainScope()
     private val retryScope: CoroutineScope = MainScope()
 
+    private data class AudioSettings(
+        val volume: Float,
+        val bufferScale: Int,
+        val loudnessEnhancerGain: Int,
+        val profile: LatencyProfile,
+    )
+
+    private fun Preferences.toAudioSettings() = AudioSettings(
+        volume = this[floatPreferencesKey(AudioConfigKeys.VOLUME)]
+            ?: context.getFloat(R.string.default_volume),
+        bufferScale = (this[floatPreferencesKey(AudioConfigKeys.BUFFER_SCALE)]
+            ?: context.getFloat(R.string.default_buffer_scale)).toInt(),
+        loudnessEnhancerGain = (this[floatPreferencesKey(AudioConfigKeys.LOUDNESS_ENHANCER)]
+            ?: context.getFloat(R.string.default_loudness_enhancer)).toInt(),
+        profile = LatencyProfile.fromIndex(
+            (this[floatPreferencesKey(AudioConfigKeys.LATENCY_MODE)]
+                ?: context.getFloat(R.string.default_latency_mode)).toInt()
+        ),
+    )
+
     companion object {
         var message by mutableStateOf("")
 
@@ -115,7 +138,15 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             Log.d(tag, "handleSetPlayWhenReady playWhenReady=$playWhenReady")
             _state = state.buildUpon().setPlayerError(null).build()
             if (playWhenReady) {
+                _state = state.buildUpon()
+                    .setPlaybackState(Player.STATE_BUFFERING)
+                    .setPlayWhenReady(true, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+                    .build()
                 val networkConfig = context.networkConfigDataStore.data.first()
+                // a Stop that arrived while the config was loading wins
+                if (!state.playWhenReady) {
+                    return@future
+                }
                 val host = networkConfig[stringPreferencesKey(NetworkConfigKeys.HOST)]
                     ?: context.getString(R.string.default_host)
                 val port = networkConfig[intPreferencesKey(NetworkConfigKeys.PORT)]
@@ -140,8 +171,6 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                         )
                     )
                     .setCurrentMediaItemIndex(0)
-                    .setPlaybackState(Player.STATE_BUFFERING)
-                    .setPlayWhenReady(true, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
                     .build()
 
                 netClient.start(
@@ -198,6 +227,8 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
         private var audioIdle = false
         @Volatile
         private var idleWatchdog: Job? = null
+        private var lastFormat: Client.AudioFormat? = null
+        private var appliedSettings: AudioSettings? = null
 
         override suspend fun log(message: String) {
 //            Log.d(tag, "logMessage: $message")
@@ -243,6 +274,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 "encoding: $encoding, channelMask: $channelMask, sampleRate: ${format.sampleRate}, compression: ${format.compression}"
             )
 
+            lastFormat = format
             releaseAudio()
             var opusDecoder: OpusDecoder? = null
             try {
@@ -266,23 +298,16 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
 
             Log.i(tag, "min buffer size: $minBufferSize bytes")
 
-            val audioConfig = context.audioConfigDataStore.data.first()
+            val settings = context.audioConfigDataStore.data.first().toAudioSettings()
+            appliedSettings = settings
 
-            val bufferScale =
-                (audioConfig[floatPreferencesKey(AudioConfigKeys.BUFFER_SCALE)] ?: context.getFloat(
-                    R.string.default_buffer_scale
-                )).toInt()
+            val bufferScale = settings.bufferScale
             Log.i(tag, "buffer scale: $bufferScale")
 
-            val loudnessEnhancerGain =
-                (audioConfig[floatPreferencesKey(AudioConfigKeys.LOUDNESS_ENHANCER)]
-                    ?: context.getFloat(R.string.default_loudness_enhancer)).toInt()
+            val loudnessEnhancerGain = settings.loudnessEnhancerGain
             Log.i(tag, "loudness enhancer: ${loudnessEnhancerGain}mB")
 
-            val profile = LatencyProfile.fromIndex(
-                (audioConfig[floatPreferencesKey(AudioConfigKeys.LATENCY_MODE)]
-                    ?: context.getFloat(R.string.default_latency_mode)).toInt()
-            )
+            val profile = settings.profile
             Log.i(tag, "latency profile: $profile")
 
             wifiLockWanted = profile.holdWifiLock
@@ -316,10 +341,8 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             }
             _audioTrack = trackBuilder.build()
 
-            val volume = audioConfig[floatPreferencesKey(AudioConfigKeys.VOLUME)]
-                ?: context.getFloat(R.string.default_volume)
-            Log.i(tag, "volume: $volume")
-            audioTrack.setVolume(volume)
+            Log.i(tag, "volume: ${settings.volume}")
+            audioTrack.setVolume(settings.volume)
 
             if (loudnessEnhancerGain > 0) {
                 var enhancer: LoudnessEnhancer? = null
@@ -353,6 +376,32 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             invalidateState()
             Log.d(tag, "onPlaybackStarted")
             message = context.getString(R.string.label_started)
+            startIdleWatchdog()
+            watchAudioSettings()
+        }
+
+        private fun watchAudioSettings() {
+            scope.launch {
+                context.audioConfigDataStore.data
+                    .map { it.toAudioSettings() }
+                    .distinctUntilChanged()
+                    .collect { applyAudioSettings(it) }
+            }
+        }
+
+        private suspend fun applyAudioSettings(new: AudioSettings) {
+            val old = appliedSettings ?: return
+            val format = lastFormat ?: return
+            if (new == old) {
+                return
+            }
+            if (new.copy(volume = old.volume) == old) {
+                appliedSettings = new
+                _audioTrack?.setVolume(new.volume)
+                return
+            }
+            Log.i(tag, "audio settings changed, rebuilding the output")
+            onReceiveAudioFormat(format)
             startIdleWatchdog()
         }
 

@@ -59,10 +59,11 @@ class NetClient(val context: Context) {
 
     private val tag = NetClient::class.simpleName
 
-    private fun defaultScope(): CoroutineScope = CoroutineScope(
+    // bound to its own callback so a late error from a stopped session can't hit the next one
+    private fun defaultScope(callback: Callback): CoroutineScope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO + CoroutineName("NetClientCoroutine") + CoroutineExceptionHandler { _, cause ->
             Log.d(tag, cause.stackTraceToString())
-            _callback?.launch {
+            callback.launch {
                 onError(cause.message, cause)
             }
         }
@@ -115,15 +116,15 @@ class NetClient(val context: Context) {
 
     fun start(host: String, port: Int, callback: Callback) {
         Log.d(tag, "$host:$port")
-        _scope = defaultScope()
+        stop()
+        _callback = callback
+        _scope = defaultScope(callback)
         scope.launch {
-            _callback = callback
-
             if (_selectorManager != null) {
                 throw Exception("Repeat start")
             }
 
-            _callback?.launch {
+            callback.launch {
                 log("${context.getString(R.string.label_connecting)} $host:$port")
             }
             _selectorManager = SelectorManager(Dispatchers.IO)
@@ -152,11 +153,11 @@ class NetClient(val context: Context) {
             val tcpWriteChannel = session.write
             val audioFormat = session.format
             var cmd: CMD? = CMD.CMD_NONE
-            _callback?.launch {
+            callback.launch {
                 onReceiveAudioFormat(audioFormat)
-            }?.join()   // wait AudioTrack created
+            }.join()   // wait AudioTrack created
 
-            _callback?.launch {
+            callback.launch {
                 log("get format success")
             }
 
@@ -171,7 +172,7 @@ class NetClient(val context: Context) {
                 return@launch
             }
 
-            _callback?.launch {
+            callback.launch {
                 onPlaybackStarted()
             }
 
@@ -215,7 +216,7 @@ class NetClient(val context: Context) {
                     _receivedAudio = true
                     // the server skips heartbeats while audio flows
                     _heartbeatLastTick = TimeSource.Monotonic.markNow()
-                    _callback?.onReceiveAudioData(buf.order(ByteOrder.LITTLE_ENDIAN))
+                    callback.onReceiveAudioData(buf.order(ByteOrder.LITTLE_ENDIAN))
                 }
             }
             // UDP can lose the registration datagram, so repeat it until audio shows up
