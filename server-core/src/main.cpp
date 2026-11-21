@@ -4,9 +4,12 @@
 
 #include <cxxopts.hpp>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 #include <iostream>
 #include <spdlog/spdlog.h>
@@ -36,7 +39,7 @@ int main(int argc, char* argv[])
     options.add_options()
         ("h,help", "Print usage")
         ("l,list-endpoint", "List available endpoints")
-        ("b,bind", "The server bind address. If not set, will use default", cxxopts::value<string>()->implicit_value(default_address), "[host][:<port>] or [ipv6][:<port>]")
+        ("b,bind", "The server bind address. If not set, will use default", cxxopts::value<string>()->implicit_value(""), "[host][:<port>] or [ipv6][:<port>]")
         ("e,endpoint", "Specify the endpoint id. If not set or set \"default\", will use default", cxxopts::value<string>()->default_value("default"), "[endpoint]")
         ("encoding", "Specify the capture encoding. If not set or set \"default\", will use default", cxxopts::value<audio_manager::encoding_t>()->default_value("default"), "[encoding]")
         ("list-encoding", "List available encoding")
@@ -98,6 +101,8 @@ int main(int argc, char* argv[])
 
         if (result.count("bind")) {
             auto s = result["bind"].as<string>();
+            // plain -b follows the network: it rebinds when the default address changes
+            const bool automatic = s.empty();
             string host;
             string port_str;
             if (!s.empty() && s.front() == '[') { // [::1]:65530
@@ -162,26 +167,64 @@ int main(int argc, char* argv[])
             }
             capture_config.silence_timeout_ms = (int)(silence_timeout * 1000);
 
-            auto network_manager = std::make_shared<class network_manager>(audio_manager);
+            std::atomic<bool> quit { false };
+            while (!quit) {
+                if (automatic) {
+                    host = network_manager::get_default_address();
+                    if (host.empty()) {
+                        spdlog::warn("no network address yet, waiting");
+                        std::this_thread::sleep_for(std::chrono::seconds(3));
+                        continue;
+                    }
+                }
+                auto network_manager = std::make_shared<class network_manager>(audio_manager);
 
-            network_manager->enable_discovery(result.count("discovery") > 0);
-            network_manager->start_server(host, port, capture_config);
+                network_manager->enable_discovery(result.count("discovery") > 0);
+                network_manager->start_server(host, port, capture_config);
 
-            // stop_server() drops the manager's ioc, so hold our own until the signals are gone
-            auto ioc = network_manager->_ioc;
-            asio::signal_set signals(*ioc, SIGINT, SIGTERM);
-            signals.async_wait([raw = ioc.get()](const asio::error_code&, int) {
-                raw->stop();
-                // a wedged audio driver shouldn't leave Ctrl+C or systemctl stop waiting for the SIGKILL
-                std::thread([] {
-                    std::this_thread::sleep_for(std::chrono::seconds(5));
-                    spdlog::error("shutdown timed out, exiting");
-                    std::_Exit(EXIT_FAILURE);
-                }).detach();
-            });
+                // stop_server() drops the manager's ioc, so hold our own until the signals are gone
+                auto ioc = network_manager->_ioc;
+                asio::signal_set signals(*ioc, SIGINT, SIGTERM);
+                signals.async_wait([raw = ioc.get(), &quit](const asio::error_code&, int) {
+                    quit = true;
+                    raw->stop();
+                    // a wedged audio driver shouldn't leave Ctrl+C or systemctl stop waiting for the SIGKILL
+                    std::thread([] {
+                        std::this_thread::sleep_for(std::chrono::seconds(5));
+                        spdlog::error("shutdown timed out, exiting");
+                        std::_Exit(EXIT_FAILURE);
+                    }).detach();
+                });
 
-            network_manager->wait_server();
-            network_manager->stop_server();
+                std::mutex mutex;
+                std::condition_variable wake;
+                bool done = false;
+                std::thread watcher;
+                if (automatic) {
+                    watcher = std::thread([&] {
+                        std::unique_lock lock(mutex);
+                        while (!wake.wait_for(lock, std::chrono::seconds(3), [&] { return done; })) {
+                            const auto now = network_manager::get_default_address();
+                            if (!now.empty() && now != host) {
+                                spdlog::info("network changed to {}, rebinding", now);
+                                ioc->stop();
+                                return;
+                            }
+                        }
+                    });
+                }
+
+                network_manager->wait_server();
+                {
+                    std::lock_guard lock(mutex);
+                    done = true;
+                }
+                wake.notify_all();
+                if (watcher.joinable()) {
+                    watcher.join();
+                }
+                network_manager->stop_server();
+            }
 
             return EXIT_SUCCESS;
         }
