@@ -205,7 +205,8 @@ class AudioPipeline(
     private fun bufferedMs(): Double {
         val sampleRate = bytesPerSecond / bytesPerFrame
         val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-        val inTrackMs = (framesWritten - played).coerceAtLeast(0) * 1000.0 / sampleRate
+        // a flush resets the head position, the track can never hold more than its own buffer
+        val inTrackMs = (framesWritten - played).coerceIn(0, track.bufferSizeInFrames.toLong()) * 1000.0 / sampleRate
         return queue.size * packetMs + inTrackMs
     }
 
