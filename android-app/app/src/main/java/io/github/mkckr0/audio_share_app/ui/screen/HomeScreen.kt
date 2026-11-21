@@ -44,6 +44,7 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,7 @@ import io.github.mkckr0.audio_share_app.service.DiscoveredServer
 import io.github.mkckr0.audio_share_app.service.Discovery
 import io.github.mkckr0.audio_share_app.ui.MainActivity
 import io.github.mkckr0.audio_share_app.ui.screen.HomeScreenViewModel.UiState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -89,6 +91,23 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                 port.isEmpty()
             } }
 
+            LaunchedEffect(host, port, started) {
+                val newPort = port.toIntOrNull()
+                if (!started || host.isEmpty() || newPort == null) {
+                    return@LaunchedEffect
+                }
+                if (host == uiState.host && newPort == uiState.port) {
+                    return@LaunchedEffect
+                }
+                // wait for typing to settle before reconnecting
+                delay(800)
+                viewModel.saveNetWorkSettings(host, newPort).join()
+                activity.awaitMediaController().run {
+                    stop()
+                    play()
+                }
+            }
+
             Column(
                 modifier = Modifier
                     .padding(16.dp)
@@ -111,7 +130,6 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                                 host = it
                             }
                         },
-                        enabled = !started,
                         isError = isHostError,
                         label = { Text(context.getString(R.string.label_host)) },
                         modifier = Modifier.weight(0.7f),
@@ -123,7 +141,6 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                                 port = it
                             }
                         },
-                        enabled = !started,
                         isError = isPortError,
                         label = { Text(context.getString(R.string.label_port)) },
                         modifier = Modifier.weight(0.3f),
@@ -139,7 +156,7 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                             scanning = false
                         }
                     },
-                    enabled = !started && !scanning,
+                    enabled = !scanning,
                 ) {
                     Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
