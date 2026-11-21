@@ -21,6 +21,13 @@ BUILD_DIRS = [
     Path(__file__).resolve().parent.parent / "server-core/out/build/linux-Release",
 ]
 INSTALL_DIR = Path.home() / ".local/bin"
+APP_ID = "io.github.mkckr0.AudioShareGui"
+GUI_NAME = "audioshare-gui"
+ICON_NAME = "audioshare"
+ICON_SOURCE = Path(__file__).resolve().parent.parent / "metadata/en-US/images/icon.png"
+DATA_DIR = Path(GLib.get_user_data_dir())
+DESKTOP_PATH = DATA_DIR / "applications" / f"{APP_ID}.desktop"
+ICON_PATH = DATA_DIR / "icons/hicolor/512x512/apps" / f"{ICON_NAME}.png"
 SERVICE = "audio-share"
 UNIT_PATH = Path.home() / ".config/systemd/user" / f"{SERVICE}.service"
 CONFIG_PATH = Path(GLib.get_user_config_dir()) / "audio-share-plus" / "gui.json"
@@ -28,6 +35,18 @@ DEFAULT_PORT = 65530
 ENDPOINT_RE = re.compile(r"^\s*(\*)?\s*id:\s*(\d+)\s+name:\s*(.*?)\s*$")
 PIPE_FLAGS = Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE
 HAVE_SYSTEMD = shutil.which("systemctl") is not None
+
+DESKTOP_TEMPLATE = """[Desktop Entry]
+Type=Application
+Name=Audio Share Server
+Comment=Stream this computer's audio to your phone
+Exec={exec}
+Icon={icon}
+Terminal=false
+Categories=AudioVideo;Audio;Network;
+Keywords=audio;stream;share;server;
+StartupNotify=true
+"""
 
 UNIT_TEMPLATE = """[Unit]
 Description=Audio Share server
@@ -124,6 +143,45 @@ def service_enabled():
 
 def service_active():
     return HAVE_SYSTEMD and systemctl("is-active", SERVICE).returncode == 0
+
+
+def launcher_paths():
+    return [INSTALL_DIR / GUI_NAME, DESKTOP_PATH, ICON_PATH]
+
+
+def refresh_desktop_caches():
+    for argv in (
+        ["update-desktop-database", str(DESKTOP_PATH.parent)],
+        ["gtk-update-icon-cache", "-f", "-t", str(DATA_DIR / "icons/hicolor")],
+    ):
+        if shutil.which(argv[0]):
+            subprocess.run(argv, capture_output=True)
+
+
+def install_launcher():
+    script = Path(__file__).resolve()
+    gui = INSTALL_DIR / GUI_NAME
+    if gui.resolve() != script:
+        staging = gui.with_name(GUI_NAME + ".new")
+        shutil.copy2(script, staging)
+        staging.chmod(0o755)
+        os.replace(staging, gui)
+    icon = "audio-card"  # the repo icon is missing when run from the installed copy
+    if ICON_SOURCE.is_file():
+        ICON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ICON_SOURCE, ICON_PATH)
+        icon = ICON_NAME
+    exec_path = str(gui).replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    DESKTOP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DESKTOP_PATH.write_text(DESKTOP_TEMPLATE.format(exec=f'"{exec_path}"'.replace("%", "%%"), icon=icon))
+    refresh_desktop_caches()
+    return gui
+
+
+def remove_launcher():
+    for path in launcher_paths():
+        path.unlink(missing_ok=True)
+    refresh_desktop_caches()
 
 
 def write_unit(args):
@@ -281,6 +339,11 @@ class Window(Gtk.ApplicationWindow):
             return
         self.binary.set_text(str(target))
         self.append(f"Installed {source} as {target}")
+        try:
+            gui = install_launcher()
+            self.append(f"Added Audio Share Server to the app menu ({gui})")
+        except OSError as e:
+            self.append(f"App menu entry failed: {e}")
         self.refresh_endpoints()
 
     def sync_bitrate(self, *_):
@@ -323,7 +386,9 @@ class Window(Gtk.ApplicationWindow):
         running = self.proc is not None or service_up
         self.start_button.set_sensitive(not running)
         self.stop_button.set_sensitive(running)
-        self.uninstall_button.set_sensitive((INSTALL_DIR / BINARY_NAME).exists() or UNIT_PATH.exists())
+        self.uninstall_button.set_sensitive(
+            (INSTALL_DIR / BINARY_NAME).exists() or UNIT_PATH.exists() or DESKTOP_PATH.exists()
+        )
         if service_up:
             self.status.set_text("Running as a systemd service")
         elif self.proc is not None:
@@ -343,7 +408,7 @@ class Window(Gtk.ApplicationWindow):
     def on_uninstall(self, _button):
         dialog = Gtk.AlertDialog(
             message="Uninstall Audio Share?",
-            detail=f"This stops the server, removes the systemd service and deletes {INSTALL_DIR / BINARY_NAME}. Your settings are kept.",
+            detail=f"This stops the server, removes the systemd service and deletes {INSTALL_DIR / BINARY_NAME} and the app menu entry. Your settings are kept.",
             buttons=["Cancel", "Uninstall"],
             cancel_button=0,
             default_button=0,
@@ -364,6 +429,7 @@ class Window(Gtk.ApplicationWindow):
             systemctl("daemon-reload")
         self.autostart.set_active(False)
         (INSTALL_DIR / BINARY_NAME).unlink(missing_ok=True)
+        remove_launcher()
         self.append("Uninstalled")
         self.refresh_status()
 
@@ -452,6 +518,9 @@ class Window(Gtk.ApplicationWindow):
 
 
 class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID)
+
     def do_activate(self):
         Window(self).present()
 
