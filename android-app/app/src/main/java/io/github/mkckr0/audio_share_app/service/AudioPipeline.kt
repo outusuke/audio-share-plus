@@ -62,6 +62,7 @@ class AudioPipeline(
     private var lastTickAt = 0L
     private var lastStatsAt = 0L
     private var concealed = 0L
+    private var framesWritten = 0L
     private var trimmed = 0L
 
     fun submit(packet: ByteBuffer) {
@@ -170,6 +171,7 @@ class AudioPipeline(
                 return
             }
             remaining -= written
+            framesWritten += written / bytesPerFrame
             if (!started) {
                 framesPrefilled += written / bytesPerFrame
                 if (written == 0 || framesPrefilled >= prefillFrames) {
@@ -197,6 +199,15 @@ class AudioPipeline(
         gateOpen = false
         gateSince = 0L
         framesPrefilled = 0L
+    }
+
+    // queue plus unplayed track audio; leaves out network and output hardware delay
+    private fun bufferedMs(): Double {
+        val sampleRate = bytesPerSecond / bytesPerFrame
+        val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        // a flush resets the head position, the track can never hold more than its own buffer
+        val inTrackMs = (framesWritten - played).coerceIn(0, track.bufferSizeInFrames.toLong()) * 1000.0 / sampleRate
+        return queue.size * packetMs + inTrackMs
     }
 
     private fun underruns(): Int =
@@ -240,6 +251,10 @@ class AudioPipeline(
         val count = underruns()
         if (count != lastUnderruns) {
             lastUnderruns = count
+            // the playback thread was late but data is queued, a rebuffer would only add silence
+            if (queue.size >= STARVED_QUEUE_PACKETS) {
+                return
+            }
             // silence also ends in an underrun, only count it when packets were still arriving
             if (now - lastArrivalMs < FLOW_WINDOW_MS) {
                 lastUnderrunAt = now
@@ -297,6 +312,7 @@ class AudioPipeline(
             parts += "underruns ${track.underrunCount}"
         }
         parts += "jitter %.0fms".format(jitter.jitterMs)
+        parts += "buffer %.0fms".format(bufferedMs())
         if (running) {
             onStats(parts.joinToString(" · "))
         }
@@ -320,6 +336,7 @@ class AudioPipeline(
         private const val DECAY_AFTER_MS = 15_000L
         private const val DECAY_STEP_MS = 10.0
         private const val UNDERRUN_BUMP_MS = 20.0
+        private const val STARVED_QUEUE_PACKETS = 2
         private const val JITTER_FACTOR = 4.0
         private const val STATS_INTERVAL_MS = 2000L
     }

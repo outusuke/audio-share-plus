@@ -8,6 +8,7 @@ cp "${root_dir}/../LICENSE" audio-share-server-cmd
 
 if [ "${platform}" = "linux" ]
 then
+    cp "${root_dir}/../linux-gui/audio-share-gui.py" audio-share-server-cmd
     filename=audio-share-server-cmd-linux.tar.gz
     tar -czvf ${filename} audio-share-server-cmd
 elif [ "${platform}" = "windows" ]

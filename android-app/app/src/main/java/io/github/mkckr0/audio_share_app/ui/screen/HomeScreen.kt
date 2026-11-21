@@ -16,6 +16,7 @@
 
 package io.github.mkckr0.audio_share_app.ui.screen
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,10 +26,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PauseCircle
@@ -44,6 +46,7 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,7 +55,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.text.isDigitsOnly
@@ -66,8 +71,10 @@ import io.github.mkckr0.audio_share_app.service.DiscoveredServer
 import io.github.mkckr0.audio_share_app.service.Discovery
 import io.github.mkckr0.audio_share_app.ui.MainActivity
 import io.github.mkckr0.audio_share_app.ui.screen.HomeScreenViewModel.UiState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
     val context = LocalContext.current
@@ -88,6 +95,23 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
             val isPortError by remember { derivedStateOf {
                 port.isEmpty()
             } }
+
+            LaunchedEffect(host, port, started) {
+                val newPort = port.toIntOrNull()
+                if (!started || host.isEmpty() || newPort == null) {
+                    return@LaunchedEffect
+                }
+                if (host == uiState.host && newPort == uiState.port) {
+                    return@LaunchedEffect
+                }
+                // wait for typing to settle before reconnecting
+                delay(800)
+                viewModel.saveNetWorkSettings(host, newPort).join()
+                activity.awaitMediaController().run {
+                    stop()
+                    play()
+                }
+            }
 
             Column(
                 modifier = Modifier
@@ -111,7 +135,6 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                                 host = it
                             }
                         },
-                        enabled = !started,
                         isError = isHostError,
                         label = { Text(context.getString(R.string.label_host)) },
                         modifier = Modifier.weight(0.7f),
@@ -123,7 +146,6 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                                 port = it
                             }
                         },
-                        enabled = !started,
                         isError = isPortError,
                         label = { Text(context.getString(R.string.label_port)) },
                         modifier = Modifier.weight(0.3f),
@@ -139,7 +161,7 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                             scanning = false
                         }
                     },
-                    enabled = !started && !scanning,
+                    enabled = !scanning,
                 ) {
                     Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
@@ -180,15 +202,19 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                     OutlinedCard(
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        SelectionContainer {
-                            Text(
-                                text = AudioPlayer.message,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(16.dp)
-                                    .verticalScroll(rememberScrollState())
-                            )
-                        }
+                        // SelectionContainer crashes when the stats text changes mid-drag
+                        val clipboard = LocalClipboardManager.current
+                        Text(
+                            text = AudioPlayer.message,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .combinedClickable(onClick = {}, onLongClick = {
+                                    clipboard.setText(AnnotatedString(AudioPlayer.message))
+                                    Toast.makeText(context, R.string.label_copied, Toast.LENGTH_SHORT).show()
+                                })
+                                .padding(16.dp)
+                                .verticalScroll(rememberScrollState())
+                        )
                     }
                 }
             }
