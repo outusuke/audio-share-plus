@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import shlex
 import shutil
@@ -13,6 +14,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk
 
+BINARY_NAME = "audioshare"
+INSTALL_DIR = Path.home() / ".local/bin"
 SERVICE = "audio-share"
 UNIT_PATH = Path.home() / ".config/systemd/user" / f"{SERVICE}.service"
 CONFIG_PATH = Path(GLib.get_user_config_dir()) / "audio-share-plus" / "gui.json"
@@ -36,7 +39,7 @@ WantedBy=default.target
 """
 
 DEFAULTS = {
-    "binary": shutil.which("as-cmd") or "as-cmd",
+    "binary": shutil.which(BINARY_NAME) or BINARY_NAME,
     "host": "",
     "port": DEFAULT_PORT,
     "endpoint": "default",
@@ -164,7 +167,12 @@ class Window(Gtk.ApplicationWindow):
 
         self.binary = Gtk.Entry(hexpand=True)
         self.binary.set_text(self.cfg["binary"])
-        self.add_row("Server binary", self.binary)
+        install = Gtk.Button(label="Install…")
+        install.connect("clicked", self.on_install)
+        binary_box = Gtk.Box(spacing=6)
+        binary_box.append(self.binary)
+        binary_box.append(install)
+        self.add_row("Server binary", binary_box)
 
         self.host = Gtk.Entry(hexpand=True, placeholder_text="Automatic")
         self.host.set_text(self.cfg["host"])
@@ -225,13 +233,36 @@ class Window(Gtk.ApplicationWindow):
         self.grid.attach(widget, 1, self.row, 1, 1)
         self.row += 1
 
+    def on_install(self, _button):
+        dialog = Gtk.FileDialog(title="Select the built server binary")
+        dialog.open(self, None, self.on_install_chosen)
+
+    def on_install_chosen(self, dialog, result):
+        try:
+            source = dialog.open_finish(result).get_path()
+        except GLib.Error:
+            return
+        target = INSTALL_DIR / BINARY_NAME
+        staging = target.with_name(BINARY_NAME + ".new")
+        try:
+            INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, staging)
+            staging.chmod(0o755)
+            os.replace(staging, target)
+        except OSError as e:
+            self.append(f"Install failed: {e}")
+            return
+        self.binary.set_text(str(target))
+        self.append(f"Installed {target}")
+        self.refresh_endpoints()
+
     def sync_bitrate(self, *_):
         self.bitrate.set_sensitive(COMPRESSION[self.compression.get_selected()] == "opus")
 
     def refresh_endpoints(self):
         found = list_endpoints(self.binary.get_text().strip())
         if found is None:
-            self.append("Could not run the server binary, check its path")
+            self.append(f"Could not run the server binary. Use Install… to copy it to {INSTALL_DIR}")
             found = []
         self.endpoint_ids = ["default"] + [i for i, _, _ in found]
         labels = ["Default"] + [f"{name} ({i})" for i, name, _ in found]
