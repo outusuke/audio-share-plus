@@ -76,7 +76,7 @@ COMPRESSION = ["opus", "none"]
 
 
 def find_source():
-    candidates = [shutil.which(SOURCE_NAME)] + [d / SOURCE_NAME for d in BUILD_DIRS]
+    candidates = [shutil.which(SOURCE_NAME)] + [d / SOURCE_NAME for d in [Path(__file__).resolve().parent, *BUILD_DIRS]]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return str(candidate)

@@ -73,7 +73,7 @@ Audio Share can share Windows/Linux computer's audio to Android phone over netwo
 
 
 ## Linux GUI
-`python3 linux-gui/audio-share-gui.py` opens a GTK 4 window for `as-cmd`. Install… copies `as-cmd` to `~/.local/bin/audioshare` and adds an app menu entry. Details in [linux-gui/README.md](linux-gui/README.md).
+The `audio-share-server-cmd-linux.tar.gz` release also contains `audio-share-gui.py`, so you can run `python3 audio-share-gui.py` from the extracted folder and press Install…. `python3 linux-gui/audio-share-gui.py` opens a GTK 4 window for `as-cmd`. Install… copies `as-cmd` to `~/.local/bin/audioshare` and adds an app menu entry. Details in [linux-gui/README.md](linux-gui/README.md).
 
 ## Finding the server from the app
 Run the server with `--discovery` (for example `as-cmd -b --discovery`) and tap **Find servers** in the app. The app lists the servers on your Wi-Fi, and tapping one fills in the host and port. The server answers on UDP port 65531, but only to devices on private networks. It needs a network that allows broadcast, so guest Wi-Fi and routers with client isolation usually block it. Allow UDP port 65531 in your firewall if nothing shows up. Discovery is IPv4 only and off by default.
