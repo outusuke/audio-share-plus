@@ -15,6 +15,11 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk
 
 BINARY_NAME = "audioshare"
+SOURCE_NAME = "as-cmd"
+BUILD_DIRS = [
+    Path(__file__).resolve().parent.parent / "server-core/out/install/linux-Release/bin",
+    Path(__file__).resolve().parent.parent / "server-core/out/build/linux-Release",
+]
 INSTALL_DIR = Path.home() / ".local/bin"
 SERVICE = "audio-share"
 UNIT_PATH = Path.home() / ".config/systemd/user" / f"{SERVICE}.service"
@@ -39,7 +44,7 @@ WantedBy=default.target
 """
 
 DEFAULTS = {
-    "binary": shutil.which(BINARY_NAME) or BINARY_NAME,
+    "binary": shutil.which(BINARY_NAME) or shutil.which(SOURCE_NAME) or BINARY_NAME,
     "host": "",
     "port": DEFAULT_PORT,
     "endpoint": "default",
@@ -49,6 +54,14 @@ DEFAULTS = {
     "discovery": False,
 }
 COMPRESSION = ["opus", "none"]
+
+
+def find_source():
+    candidates = [shutil.which(SOURCE_NAME)] + [d / SOURCE_NAME for d in BUILD_DIRS]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    return None
 
 
 def load_config():
@@ -241,7 +254,11 @@ class Window(Gtk.ApplicationWindow):
         self.row += 1
 
     def on_install(self, _button):
-        dialog = Gtk.FileDialog(title="Select the built server binary")
+        source = find_source()
+        if source:
+            self.install_from(source)
+            return
+        dialog = Gtk.FileDialog(title=f"Select the built {SOURCE_NAME} binary")
         dialog.open(self, None, self.on_install_chosen)
 
     def on_install_chosen(self, dialog, result):
@@ -249,6 +266,9 @@ class Window(Gtk.ApplicationWindow):
             source = dialog.open_finish(result).get_path()
         except GLib.Error:
             return
+        self.install_from(source)
+
+    def install_from(self, source):
         target = INSTALL_DIR / BINARY_NAME
         staging = target.with_name(BINARY_NAME + ".new")
         try:
@@ -260,7 +280,7 @@ class Window(Gtk.ApplicationWindow):
             self.append(f"Install failed: {e}")
             return
         self.binary.set_text(str(target))
-        self.append(f"Installed {target}")
+        self.append(f"Installed {source} as {target}")
         self.refresh_endpoints()
 
     def sync_bitrate(self, *_):
@@ -269,7 +289,7 @@ class Window(Gtk.ApplicationWindow):
     def refresh_endpoints(self):
         found = list_endpoints(self.binary.get_text().strip())
         if found is None:
-            self.append(f"Could not run the server binary. Use Install… to copy it to {INSTALL_DIR}")
+            self.append(f"Could not run the server binary. Install… copies {SOURCE_NAME} to {INSTALL_DIR / BINARY_NAME}")
             found = []
         self.endpoint_ids = ["default"] + [i for i, _, _ in found]
         labels = ["Default"] + [f"{name} ({i})" for i, name, _ in found]
