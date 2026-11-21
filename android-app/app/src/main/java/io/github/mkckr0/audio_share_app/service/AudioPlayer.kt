@@ -138,8 +138,8 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             Log.d(tag, "handleSetPlayWhenReady playWhenReady=$playWhenReady")
             _state = state.buildUpon().setPlayerError(null).build()
             if (playWhenReady) {
+                // BUFFERING is rejected while the playlist is empty, so it is set with the playlist below
                 _state = state.buildUpon()
-                    .setPlaybackState(Player.STATE_BUFFERING)
                     .setPlayWhenReady(true, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
                     .build()
                 val networkConfig = context.networkConfigDataStore.data.first()
@@ -171,6 +171,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                         )
                     )
                     .setCurrentMediaItemIndex(0)
+                    .setPlaybackState(Player.STATE_BUFFERING)
                     .build()
 
                 netClient.start(
