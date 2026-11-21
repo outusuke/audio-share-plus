@@ -62,6 +62,7 @@ class AudioPipeline(
     private var lastTickAt = 0L
     private var lastStatsAt = 0L
     private var concealed = 0L
+    private var framesWritten = 0L
     private var trimmed = 0L
 
     fun submit(packet: ByteBuffer) {
@@ -170,6 +171,7 @@ class AudioPipeline(
                 return
             }
             remaining -= written
+            framesWritten += written / bytesPerFrame
             if (!started) {
                 framesPrefilled += written / bytesPerFrame
                 if (written == 0 || framesPrefilled >= prefillFrames) {
@@ -197,6 +199,14 @@ class AudioPipeline(
         gateOpen = false
         gateSince = 0L
         framesPrefilled = 0L
+    }
+
+    // queue plus unplayed track audio; leaves out network and output hardware delay
+    private fun bufferedMs(): Double {
+        val sampleRate = bytesPerSecond / bytesPerFrame
+        val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        val inTrackMs = (framesWritten - played).coerceAtLeast(0) * 1000.0 / sampleRate
+        return queue.size * packetMs + inTrackMs
     }
 
     private fun underruns(): Int =
@@ -297,6 +307,7 @@ class AudioPipeline(
             parts += "underruns ${track.underrunCount}"
         }
         parts += "jitter %.0fms".format(jitter.jitterMs)
+        parts += "buffer %.0fms".format(bufferedMs())
         if (running) {
             onStats(parts.joinToString(" · "))
         }
