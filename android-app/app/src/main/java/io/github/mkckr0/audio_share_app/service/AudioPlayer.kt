@@ -315,6 +315,9 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             releaseWifiLock()
             acquireWifiLock()
 
+            // a tiny track buffer underruns whenever the playback thread is a few ms late
+            val minTrackBytes = format.sampleRate * profile.minTrackMs / 1000 *
+                bytesPerSample(encoding) * format.channels
             val trackBuilder = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -329,7 +332,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                         .setSampleRate(format.sampleRate)
                         .build()
                 )
-                .setBufferSizeInBytes(minBufferSize * bufferScale)
+                .setBufferSizeInBytes(maxOf(minBufferSize * bufferScale, minTrackBytes))
                 .setTransferMode(AudioTrack.MODE_STREAM)
             // Effects generally cannot be attached to fast-mixer (low-latency) tracks, so only
             // request low latency when no loudness enhancer is wanted.
