@@ -172,6 +172,9 @@ class Window(Gtk.ApplicationWindow):
         binary_box = Gtk.Box(spacing=6)
         binary_box.append(self.binary)
         binary_box.append(install)
+        self.uninstall_button = Gtk.Button(label="Uninstall…")
+        self.uninstall_button.connect("clicked", self.on_uninstall)
+        binary_box.append(self.uninstall_button)
         self.add_row("Server binary", binary_box)
 
         self.host = Gtk.Entry(hexpand=True, placeholder_text="Automatic")
@@ -215,11 +218,15 @@ class Window(Gtk.ApplicationWindow):
         self.add_row("Start at login (systemd)", self.autostart)
 
         controls = Gtk.Box(spacing=12)
-        self.button = Gtk.Button(label="Start")
-        self.button.add_css_class("suggested-action")
-        self.button.connect("clicked", self.on_toggle)
+        self.start_button = Gtk.Button(label="Start")
+        self.start_button.add_css_class("suggested-action")
+        self.start_button.connect("clicked", self.on_start)
+        self.stop_button = Gtk.Button(label="Stop")
+        self.stop_button.add_css_class("destructive-action")
+        self.stop_button.connect("clicked", self.on_stop)
         self.status = Gtk.Label(xalign=0, hexpand=True)
-        controls.append(self.button)
+        controls.append(self.start_button)
+        controls.append(self.stop_button)
         controls.append(self.status)
         box.append(controls)
 
@@ -294,7 +301,9 @@ class Window(Gtk.ApplicationWindow):
     def refresh_status(self):
         service_up = self.autostart.get_active() and service_active()
         running = self.proc is not None or service_up
-        self.button.set_label("Stop" if running else "Start")
+        self.start_button.set_sensitive(not running)
+        self.stop_button.set_sensitive(running)
+        self.uninstall_button.set_sensitive((INSTALL_DIR / BINARY_NAME).exists() or UNIT_PATH.exists())
         if service_up:
             self.status.set_text("Running as a systemd service")
         elif self.proc is not None:
@@ -303,11 +312,39 @@ class Window(Gtk.ApplicationWindow):
             self.status.set_text("Stopped")
         return GLib.SOURCE_CONTINUE
 
-    def on_toggle(self, _button):
-        if self.proc is not None or (self.autostart.get_active() and service_active()):
-            self.stop()
-        else:
-            self.start()
+    def on_start(self, _button):
+        self.start()
+        self.refresh_status()
+
+    def on_stop(self, _button):
+        self.stop()
+        self.refresh_status()
+
+    def on_uninstall(self, _button):
+        dialog = Gtk.AlertDialog(
+            message="Uninstall Audio Share?",
+            detail=f"This stops the server, removes the systemd service and deletes {INSTALL_DIR / BINARY_NAME}. Your settings are kept.",
+            buttons=["Cancel", "Uninstall"],
+            cancel_button=0,
+            default_button=0,
+        )
+        dialog.choose(self, None, self.on_uninstall_chosen)
+
+    def on_uninstall_chosen(self, dialog, result):
+        try:
+            if dialog.choose_finish(result) != 1:
+                return
+        except GLib.Error:
+            return
+        if self.proc is not None:
+            self.proc.send_signal(signal.SIGINT)
+        if HAVE_SYSTEMD:
+            systemctl("disable", "--now", SERVICE)
+            UNIT_PATH.unlink(missing_ok=True)
+            systemctl("daemon-reload")
+        self.autostart.set_active(False)
+        (INSTALL_DIR / BINARY_NAME).unlink(missing_ok=True)
+        self.append("Uninstalled")
         self.refresh_status()
 
     def start(self):

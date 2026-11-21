@@ -11,4 +11,5 @@ python3 linux-gui/audio-share-gui.py
 - Settings are saved to `~/.config/audio-share-plus/gui.json`.
 - Closing the window stops a server started from it. A systemd service keeps running.
 - "Start at login" writes `~/.config/systemd/user/audio-share.service` from the current settings and enables it. Press Start again after changing settings to rewrite the unit and restart it.
+- Uninstall… stops the server, removes the service and deletes `~/.local/bin/audioshare`. Settings in `gui.json` are kept.
 - Service logs: `journalctl --user -u audio-share -f`.
