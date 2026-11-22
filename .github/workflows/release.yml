@@ -78,13 +78,19 @@ jobs:
         working-directory: server-mfc
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
-      VCPKG_BINARY_SOURCES: clear
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-binary-cache,readwrite"
     steps:
       - uses: actions/checkout@v4
       - name: Apply VERSION
         shell: bash
         working-directory: ${{ github.workspace }}
         run: bash scripts/apply_version.sh
+
+      - uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-bin-mfc-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: vcpkg-bin-mfc-
 
       - uses: microsoft/setup-msbuild@v2
       
@@ -94,7 +100,14 @@ jobs:
       
       - run: vcpkg integrate install
       
-      - run: vcpkg install asio protobuf opus spdlog[wchar] wil nlohmann-json
+      - name: Install vcpkg packages
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            vcpkg install asio protobuf opus 'spdlog[wchar]' wil nlohmann-json && exit 0
+            sleep 30
+          done
+          exit 1
       
       - run: msbuild /m /p:Configuration=Release,Platform=x64
       
@@ -130,13 +143,19 @@ jobs:
         working-directory: server-core
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.vcpkg_triplet }}
-      VCPKG_BINARY_SOURCES: clear
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-binary-cache,readwrite"
     steps:
       - uses: actions/checkout@v4
       - name: Apply VERSION
         shell: bash
         working-directory: ${{ github.workspace }}
         run: bash scripts/apply_version.sh
+
+      - uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-bin-core-${{ matrix.os }}-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: vcpkg-bin-core-${{ matrix.os }}-
       
       - name: Install Linux Deps
         run: sudo apt update && sudo apt install -y libpipewire-0.3-dev
@@ -150,13 +169,16 @@ jobs:
       
       - run: vcpkg integrate install
       
-      - run: vcpkg install asio protobuf cxxopts opus
-      
-      - run: vcpkg install spdlog[wchar] wil
-        if: ${{ matrix.os == 'windows-latest' }}
-      
-      - run: vcpkg install spdlog
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
+      - name: Install vcpkg packages
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = windows ]; then extra="spdlog[wchar] wil"; else extra=spdlog; fi
+          # github.com returns 503 now and then when vcpkg fetches port patches
+          for i in 1 2 3; do
+            vcpkg install asio protobuf cxxopts opus $extra && exit 0
+            sleep 30
+          done
+          exit 1
       
       - uses: lukka/run-cmake@v10
         with:
