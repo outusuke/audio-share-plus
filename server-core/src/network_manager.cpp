@@ -39,6 +39,8 @@
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <fstream>
+#include <sstream>
 #endif
 
 #include <spdlog/spdlog.h>
@@ -136,8 +138,57 @@ std::vector<std::string> network_manager::get_address_list(bool include_ipv6)
     return address_list;
 }
 
+#ifdef linux
+static std::string default_route_interface()
+{
+    std::ifstream f("/proc/net/route");
+    std::string line, best;
+    long best_metric = 0;
+    std::getline(f, line);
+    while (std::getline(f, line)) {
+        std::istringstream s(line);
+        std::string iface, dest, gateway;
+        unsigned flags = 0;
+        long refcnt = 0, use = 0, metric = 0;
+        s >> iface >> dest >> gateway >> std::hex >> flags >> std::dec >> refcnt >> use >> metric;
+        if (dest == "00000000" && (flags & 1) && (best.empty() || metric < best_metric)) {
+            best = iface;
+            best_metric = metric;
+        }
+    }
+    return best;
+}
+
+static std::string interface_address(const std::string& name)
+{
+    std::string found;
+    struct ifaddrs* ifaddrs;
+    if (getifaddrs(&ifaddrs) == -1) {
+        return found;
+    }
+    for (auto ifa = ifaddrs; ifa && found.empty(); ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET && name == ifa->ifa_name) {
+            char buf[64];
+            if (inet_ntop(AF_INET, &((const sockaddr_in*)ifa->ifa_addr)->sin_addr, buf, sizeof(buf))) {
+                found = buf;
+            }
+        }
+    }
+    freeifaddrs(ifaddrs);
+    return found;
+}
+#endif
+
 std::string network_manager::get_default_address()
 {
+#ifdef linux
+    // a VPN or bridge can be listed before the LAN interface, so go by the default route
+    if (const auto iface = default_route_interface(); !iface.empty()) {
+        if (auto address = interface_address(iface); !address.empty()) {
+            return address;
+        }
+    }
+#endif
     auto address_list = get_address_list();
     if (address_list.empty()) {
         address_list = get_address_list(true); // IPv6-only network
@@ -152,10 +203,12 @@ std::string network_manager::select_default_address(const std::vector<std::strin
     }
 
     auto is_private_address = [](const std::string& address) {
-        constexpr uint32_t private_addr_list[] = {
-            0x0a000000,
-            0xac100000,
-            0xc0a80000,
+        constexpr struct {
+            uint32_t net, mask;
+        } private_ranges[] = {
+            { 0x0a000000, 0xff000000 },
+            { 0xac100000, 0xfff00000 },
+            { 0xc0a80000, 0xffff0000 },
         };
 
         uint32_t addr = 0;
@@ -163,8 +216,8 @@ std::string network_manager::select_default_address(const std::vector<std::strin
             return false;
         }
         addr = ntohl(addr);
-        for (auto&& private_addr : private_addr_list) {
-            if ((addr & private_addr) == private_addr) {
+        for (auto&& range : private_ranges) {
+            if ((addr & range.mask) == range.net) {
                 return true;
             }
         }
