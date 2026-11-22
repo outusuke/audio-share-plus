@@ -49,6 +49,7 @@
     <string name="label_version">Version</string>
     <!-- Update Worker -->
     <string name="label_no_update">No update</string>
+    <string name="label_update_check_failed">Couldn\'t check for updates</string>
     <string name="label_has_an_update_1">Has an update, but no APK</string>
     <string name="label_has_an_update_2">New version (%s)</string>
     <string name="label_no_post_notification_permission">No permission to post notification</string>
