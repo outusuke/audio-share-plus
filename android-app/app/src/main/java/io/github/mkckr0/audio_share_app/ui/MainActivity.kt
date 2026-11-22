@@ -100,7 +100,7 @@ class MainActivity : ComponentActivity() {
             Log.i(tag, "auto check for update enabled=$autoCheck")
             if (autoCheck) {
                 UpdateWorker.schedulePeriodic(applicationContext)
-                UpdateWorker.checkNow(applicationContext)
+                UpdateWorker.checkOnLaunch(applicationContext)
             } else {
                 UpdateWorker.cancelPeriodic(applicationContext)
             }

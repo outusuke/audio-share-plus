@@ -100,6 +100,8 @@ class UpdateWorker(appContext: Context, workerParams: WorkerParameters) :
             Log.w(tag, "unexpected release tag: ${latestRelease.tagName} / ${BuildConfig.VERSION_NAME}", e)
             false
         }
+        applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
         Log.i(tag, "latest=${latestRelease.tagName} installed=v${BuildConfig.VERSION_NAME} newer=$isNewer assets=${latestRelease.assets.map { it.name }}")
         if (!isNewer) {
             showMessage(applicationContext.getString(R.string.label_no_update))
@@ -160,6 +162,9 @@ class UpdateWorker(appContext: Context, workerParams: WorkerParameters) :
     companion object {
         const val SUPPRESS_MESSAGE = "SUPPRESS_MESSAGE"
         const val TAG_PERIODIC = "update_periodic"
+        private const val PREFS = "update_worker"
+        private const val KEY_LAST_CHECK = "last_check_ms"
+        private const val LAUNCH_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
 
         fun schedulePeriodic(context: Context, replace: Boolean = false) {
             val request = PeriodicWorkRequestBuilder<UpdateWorker>(
@@ -177,6 +182,11 @@ class UpdateWorker(appContext: Context, workerParams: WorkerParameters) :
                 if (replace) ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE else ExistingPeriodicWorkPolicy.KEEP,
                 request
             )
+        }
+
+        fun checkOnLaunch(context: Context) {
+            val last = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_CHECK, 0)
+            if (System.currentTimeMillis() - last >= LAUNCH_CHECK_INTERVAL_MS) checkNow(context)
         }
 
         fun checkNow(context: Context) {
