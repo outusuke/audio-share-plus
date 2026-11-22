@@ -76,7 +76,7 @@ private fun <IconSrc> BaseSwitchPreference(
                         it[prefKey] = !checked
                     }
                 }
-                onChange?.invoke(checked)
+                onChange?.invoke(!checked)
             }
         }
     )

@@ -51,12 +51,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import androidx.work.Constraints
-import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import io.github.mkckr0.audio_share_app.BuildConfig
 import io.github.mkckr0.audio_share_app.R
@@ -73,7 +69,6 @@ import io.github.mkckr0.audio_share_app.ui.theme.AppTheme
 import io.github.mkckr0.audio_share_app.ui.theme.isDynamicColorFromWallpaperAvailable
 import io.github.mkckr0.audio_share_app.ui.theme.parseColor
 import io.github.mkckr0.audio_share_app.worker.UpdateWorker
-import java.util.concurrent.TimeUnit
 
 @SuppressLint("BatteryLife")
 @Composable
@@ -198,25 +193,11 @@ fun SettingsScreen() {
             ) { checked ->
                 if (checked) {
                     Log.d(tag, "UpdateWorker beginAutoUpdate")
-                    val updateWorker =
-                        PeriodicWorkRequestBuilder<UpdateWorker>(
-                            3, TimeUnit.HOURS,
-                            5, TimeUnit.MINUTES,
-//                            PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS, TimeUnit.MILLISECONDS,
-//                            PeriodicWorkRequest.MIN_PERIODIC_FLEX_MILLIS, TimeUnit.MILLISECONDS,
-                        ).setConstraints(
-                            Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.UNMETERED)
-                                .build()
-                        ).build()
-                    workManager.enqueueUniquePeriodicWork(
-                        WorkName.AUTO_CHECK_UPDATE.value,
-                        ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
-                        updateWorker
-                    )
+                    UpdateWorker.schedulePeriodic(context.applicationContext, replace = true)
+                    UpdateWorker.checkNow(context.applicationContext)
                 } else {
                     Log.d(tag, "UpdateWorker stopAutoUpdate")
-                    workManager.cancelUniqueWork(WorkName.AUTO_CHECK_UPDATE.value)
+                    UpdateWorker.cancelPeriodic(context.applicationContext)
                 }
             }
             Preference(
@@ -278,4 +259,4 @@ fun SettingsScreenPreview() {
     AppTheme {
         SettingsScreen()
     }
-}
+}
