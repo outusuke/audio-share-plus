@@ -49,6 +49,7 @@
     <string name="label_version">版本</string>
     <!-- Update Worker -->
     <string name="label_no_update">无更新</string>
+    <string name="label_update_check_failed">无法检查更新</string>
     <string name="label_has_an_update_1">有更新，但无 APK</string>
     <string name="label_has_an_update_2">新版本（%s）</string>
     <string name="label_no_post_notification_permission">无通知权限</string>

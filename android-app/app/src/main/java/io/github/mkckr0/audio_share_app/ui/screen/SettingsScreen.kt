@@ -58,6 +58,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.work.workDataOf
 import io.github.mkckr0.audio_share_app.BuildConfig
 import io.github.mkckr0.audio_share_app.R
 import io.github.mkckr0.audio_share_app.model.AppSettingsKeys
@@ -202,17 +203,26 @@ fun SettingsScreen() {
                         PeriodicWorkRequestBuilder<UpdateWorker>(
                             3, TimeUnit.HOURS,
                             5, TimeUnit.MINUTES,
-//                            PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS, TimeUnit.MILLISECONDS,
-//                            PeriodicWorkRequest.MIN_PERIODIC_FLEX_MILLIS, TimeUnit.MILLISECONDS,
                         ).setConstraints(
                             Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.UNMETERED)
+                                .setRequiredNetworkType(NetworkType.CONNECTED)
                                 .build()
-                        ).build()
+                        )
+                            .addTag(UpdateWorker.TAG_PERIODIC)
+                            .setInputData(workDataOf(UpdateWorker.SUPPRESS_MESSAGE to true))
+                            .build()
                     workManager.enqueueUniquePeriodicWork(
                         WorkName.AUTO_CHECK_UPDATE.value,
                         ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE,
                         updateWorker
+                    )
+                    // first periodic run can be hours away
+                    workManager.enqueueUniqueWork(
+                        WorkName.CHECK_UPDATE.value,
+                        ExistingWorkPolicy.REPLACE,
+                        OneTimeWorkRequestBuilder<UpdateWorker>()
+                            .setInputData(workDataOf(UpdateWorker.SUPPRESS_MESSAGE to true))
+                            .build()
                     )
                 } else {
                     Log.d(tag, "UpdateWorker stopAutoUpdate")
@@ -278,4 +288,4 @@ fun SettingsScreenPreview() {
     AppTheme {
         SettingsScreen()
     }
-}
+}
