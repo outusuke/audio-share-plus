@@ -43,6 +43,7 @@ import io.github.mkckr0.audio_share_app.model.getBoolean
 import io.github.mkckr0.audio_share_app.service.PlaybackService
 import io.github.mkckr0.audio_share_app.ui.screen.MainScreen
 import io.github.mkckr0.audio_share_app.ui.theme.AppTheme
+import io.github.mkckr0.audio_share_app.worker.UpdateWorker
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.await
@@ -93,6 +94,16 @@ class MainActivity : ComponentActivity() {
             val appSettings = appSettingsDataStore.data.first()
             val autoStart = appSettings[booleanPreferencesKey(AppSettingsKeys.START_PLAYBACK_WHEN_APP_START)] ?: getBoolean(
                 R.bool.default_start_playback_when_app_start)
+
+            val autoCheck = appSettings[booleanPreferencesKey(AppSettingsKeys.AUTO_CHECK_FOR_UPDATE)]
+                ?: getBoolean(R.bool.default_auto_check_for_update)
+            Log.i(tag, "auto check for update enabled=$autoCheck")
+            if (autoCheck) {
+                UpdateWorker.schedulePeriodic(applicationContext)
+                UpdateWorker.checkNow(applicationContext)
+            } else {
+                UpdateWorker.cancelPeriodic(applicationContext)
+            }
 
             if (autoStart) {
                 awaitMediaController().play()

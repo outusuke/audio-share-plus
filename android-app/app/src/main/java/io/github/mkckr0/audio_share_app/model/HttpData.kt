@@ -32,7 +32,7 @@ data class Asset(
 @Serializable
 @Parcelize
 data class LatestRelease(
-    val name: String,
+    val name: String? = null,
     val tagName: String,
     val assets: List<Asset>,
-) : Parcelable
+) : Parcelable
